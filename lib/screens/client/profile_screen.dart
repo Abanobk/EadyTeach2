@@ -101,7 +101,7 @@ class _ClientProfileScreenState extends State<ClientProfileScreen> {
                           : null,
                       child: user?.avatarUrl == null
                           ? Text(
-                              (user?.name ?? 'U').substring(0, 1).toUpperCase(),
+                              ((user?.name?.isNotEmpty == true) ? user!.name[0] : 'U').toUpperCase(),
                               style: const TextStyle(
                                   color: AppColors.primary,
                                   fontSize: 28,
