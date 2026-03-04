@@ -452,61 +452,79 @@ class _TaskWizardState extends State<_TaskWizard> {
   }
 
   Future<void> _save() async {
+    // Validate title
     if (_titleCtrl.text.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('يرجى إدخال عنوان المهمة'), backgroundColor: Colors.red),
+        const SnackBar(
+          content: Text('يرجى إدخال عنوان المهمة في الخطوة الأولى'),
+          backgroundColor: Colors.red,
+          duration: Duration(seconds: 3),
+        ),
       );
-      setState(() => _step = 0);
+      // Don't reset step - just show error
       return;
     }
 
     setState(() => _saving = true);
     try {
-      final items = _itemControllers.map((c) => c.text.trim()).where((t) => t.isNotEmpty).toList();
+      final items = _itemControllers
+          .map((c) => c.text.trim())
+          .where((t) => t.isNotEmpty)
+          .toList();
+
       String? estimatedArrivalIso;
       if (_estimatedArrivalTime != null) {
         final base = _scheduledDate ?? DateTime.now();
-        estimatedArrivalIso = DateTime(base.year, base.month, base.day, _estimatedArrivalTime!.hour, _estimatedArrivalTime!.minute).toIso8601String();
-      }
-
-      // Helper to remove null values - API rejects null for optional fields
-      Map<String, dynamic> removeNulls(Map<String, dynamic> map) {
-        return Map.fromEntries(map.entries.where((e) => e.value != null));
+        estimatedArrivalIso = DateTime(
+          base.year, base.month, base.day,
+          _estimatedArrivalTime!.hour,
+          _estimatedArrivalTime!.minute,
+        ).toIso8601String();
       }
 
       if (_isEdit) {
-        await ApiService.mutate('tasks.update', input: removeNulls({
+        // Build update payload - only include non-null values
+        final updateInput = <String, dynamic>{
           'id': widget.task!['id'],
           'title': _titleCtrl.text.trim(),
-          'customerId': _customerId,
-          'technicianId': _technicianId,
+          'collectionType': _collectionType,
           'status': _status,
-          'scheduledAt': _scheduledDate?.toIso8601String(),
-          'estimatedArrivalAt': estimatedArrivalIso,
-          'amount': _amountCtrl.text.isNotEmpty ? _amountCtrl.text.trim() : null,
-          'collectionType': _collectionType,
-          'notes': _notesCtrl.text.isNotEmpty ? _notesCtrl.text.trim() : null,
           'items': items,
-        }));
+        };
+        if (_customerId != null) updateInput['customerId'] = _customerId;
+        if (_technicianId != null) updateInput['technicianId'] = _technicianId;
+        if (_scheduledDate != null) updateInput['scheduledAt'] = _scheduledDate!.toIso8601String();
+        if (estimatedArrivalIso != null) updateInput['estimatedArrivalAt'] = estimatedArrivalIso;
+        if (_amountCtrl.text.isNotEmpty) updateInput['amount'] = _amountCtrl.text.trim();
+        if (_notesCtrl.text.isNotEmpty) updateInput['notes'] = _notesCtrl.text.trim();
+
+        await ApiService.mutate('tasks.update', input: updateInput);
       } else {
-        await ApiService.mutate('tasks.create', input: removeNulls({
+        // Build create payload - items is required, others are optional
+        final createInput = <String, dynamic>{
           'title': _titleCtrl.text.trim(),
-          'customerId': _customerId,
-          'technicianId': _technicianId,
-          'scheduledAt': _scheduledDate?.toIso8601String(),
-          'estimatedArrivalAt': estimatedArrivalIso,
-          'amount': _amountCtrl.text.isNotEmpty ? _amountCtrl.text.trim() : null,
           'collectionType': _collectionType,
-          'notes': _notesCtrl.text.isNotEmpty ? _notesCtrl.text.trim() : null,
           'items': items,
-        }));
+        };
+        if (_customerId != null) createInput['customerId'] = _customerId;
+        if (_technicianId != null) createInput['technicianId'] = _technicianId;
+        if (_scheduledDate != null) createInput['scheduledAt'] = _scheduledDate!.toIso8601String();
+        if (estimatedArrivalIso != null) createInput['estimatedArrivalAt'] = estimatedArrivalIso;
+        if (_amountCtrl.text.isNotEmpty) createInput['amount'] = _amountCtrl.text.trim();
+        if (_notesCtrl.text.isNotEmpty) createInput['notes'] = _notesCtrl.text.trim();
+
+        await ApiService.mutate('tasks.create', input: createInput);
       }
       widget.onSaved();
     } catch (e) {
       setState(() => _saving = false);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('خطأ: $e'), backgroundColor: Colors.red),
+          SnackBar(
+            content: Text('خطأ في الحفظ: $e'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 5),
+          ),
         );
       }
     }
