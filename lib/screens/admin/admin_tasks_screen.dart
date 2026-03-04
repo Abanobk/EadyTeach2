@@ -469,8 +469,13 @@ class _TaskWizardState extends State<_TaskWizard> {
         estimatedArrivalIso = DateTime(base.year, base.month, base.day, _estimatedArrivalTime!.hour, _estimatedArrivalTime!.minute).toIso8601String();
       }
 
+      // Helper to remove null values - API rejects null for optional fields
+      Map<String, dynamic> removeNulls(Map<String, dynamic> map) {
+        return Map.fromEntries(map.entries.where((e) => e.value != null));
+      }
+
       if (_isEdit) {
-        await ApiService.mutate('tasks.update', input: {
+        await ApiService.mutate('tasks.update', input: removeNulls({
           'id': widget.task!['id'],
           'title': _titleCtrl.text.trim(),
           'customerId': _customerId,
@@ -482,9 +487,9 @@ class _TaskWizardState extends State<_TaskWizard> {
           'collectionType': _collectionType,
           'notes': _notesCtrl.text.isNotEmpty ? _notesCtrl.text.trim() : null,
           'items': items,
-        });
+        }));
       } else {
-        await ApiService.mutate('tasks.create', input: {
+        await ApiService.mutate('tasks.create', input: removeNulls({
           'title': _titleCtrl.text.trim(),
           'customerId': _customerId,
           'technicianId': _technicianId,
@@ -494,7 +499,7 @@ class _TaskWizardState extends State<_TaskWizard> {
           'collectionType': _collectionType,
           'notes': _notesCtrl.text.isNotEmpty ? _notesCtrl.text.trim() : null,
           'items': items,
-        });
+        }));
       }
       widget.onSaved();
     } catch (e) {
