@@ -98,7 +98,7 @@ class _AdminHomeScreenState extends State<AdminHomeScreen> {
                   ),
                   const SizedBox(width: 12),
                   Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Text(auth.user?['name'] ?? 'المسؤول', style: const TextStyle(color: AppColors.text, fontWeight: FontWeight.bold, fontSize: 15)),
+                    Text(auth.user?.name ?? 'المسؤول', style: const TextStyle(color: AppColors.text, fontWeight: FontWeight.bold, fontSize: 15)),
                     const Text('لوحة التحكم', style: TextStyle(color: AppColors.muted, fontSize: 12)),
                   ])),
                 ],
@@ -175,7 +175,7 @@ class _AdminHomeScreenState extends State<AdminHomeScreen> {
               margin: const EdgeInsets.only(left: 12, top: 8, bottom: 8),
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
               decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.15), borderRadius: BorderRadius.circular(20)),
-              child: Text(auth.user?['name'] ?? 'مسؤول', style: const TextStyle(color: AppColors.primary, fontSize: 13, fontWeight: FontWeight.w600)),
+              child: Text(auth.user?.name ?? 'مسؤول', style: const TextStyle(color: AppColors.primary, fontSize: 13, fontWeight: FontWeight.w600)),
             ),
           ],
         ),
