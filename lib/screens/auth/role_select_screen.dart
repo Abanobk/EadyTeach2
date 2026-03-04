@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../providers/auth_provider.dart';
 import '../../utils/app_theme.dart';
+import 'admin_login_screen.dart';
 
 class RoleSelectScreen extends StatelessWidget {
   const RoleSelectScreen({super.key});
@@ -72,14 +73,21 @@ class RoleSelectScreen extends StatelessWidget {
                 ),
                 const SizedBox(height: 12),
 
-                // Admin - always visible
+                // Admin - navigates to admin login screen
                 _RoleCard(
                   icon: Icons.dashboard_outlined,
                   title: 'مسؤول',
                   subtitle: 'لوحة التحكم الكاملة — المنتجات، العملاء، المهام',
                   color: const Color(0xFF7B4F1A),
                   badge: user?.isAdmin == true ? 'دورك الحالي' : null,
-                  onTap: () => Navigator.pushReplacementNamed(context, '/admin'),
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => const AdminLoginScreen(),
+                      ),
+                    );
+                  },
                 ),
 
                 const SizedBox(height: 24),

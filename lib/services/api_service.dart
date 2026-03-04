@@ -3,7 +3,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 class ApiService {
-  // ضع رابط الموقع المنشور هنا بعد النشر
+  // رابط الموقع المنشور
   static const String baseUrl = 'https://easytechapp-n8wz4sb5.manus.space';
   static const String trpcUrl = '$baseUrl/api/trpc';
 
@@ -14,7 +14,9 @@ class ApiService {
 
   static Future<void> _saveCookie(String cookie) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('session_cookie', cookie);
+    // Extract only the session cookie value (before the first semicolon)
+    final cookieValue = cookie.split(';').first.trim();
+    await prefs.setString('session_cookie', cookieValue);
   }
 
   static Future<void> clearCookie() async {
@@ -27,10 +29,23 @@ class ApiService {
       'Content-Type': 'application/json',
       'Accept': 'application/json',
     };
-    if (cookie != null) {
+    if (cookie != null && cookie.isNotEmpty) {
       headers['Cookie'] = cookie;
     }
     return headers;
+  }
+
+  /// Extract data from tRPC v11 response format
+  /// Response format: [{"result":{"data":{"json": <actual_data>}}}]
+  static dynamic _extractData(dynamic responseData) {
+    if (responseData is Map) {
+      // tRPC v11 wraps data in {"json": ...}
+      if (responseData.containsKey('json')) {
+        return responseData['json'];
+      }
+      return responseData;
+    }
+    return responseData;
   }
 
   /// tRPC Query (GET)
@@ -40,8 +55,11 @@ class ApiService {
   }) async {
     final cookie = await _getCookie();
     String url = '$trpcUrl/$procedure';
+
+    // tRPC v11 uses {"json": input} format
     if (input != null) {
-      final encoded = Uri.encodeComponent(jsonEncode({'0': input}));
+      final wrappedInput = {'json': input};
+      final encoded = Uri.encodeComponent(jsonEncode({'0': wrappedInput}));
       url += '?batch=1&input=$encoded';
     } else {
       url += '?batch=1';
@@ -54,17 +72,19 @@ class ApiService {
 
     // Save cookie if returned
     final setCookie = response.headers['set-cookie'];
-    if (setCookie != null) {
+    if (setCookie != null && setCookie.isNotEmpty) {
       await _saveCookie(setCookie);
     }
 
     if (response.statusCode == 200) {
       final List<dynamic> data = jsonDecode(response.body);
       if (data.isNotEmpty && data[0]['result'] != null) {
-        return {'data': data[0]['result']['data'], 'success': true};
+        final rawData = data[0]['result']['data'];
+        return {'data': _extractData(rawData), 'success': true};
       }
       if (data.isNotEmpty && data[0]['error'] != null) {
-        throw Exception(data[0]['error']['message'] ?? 'Unknown error');
+        final errorJson = data[0]['error']['json'] ?? data[0]['error'];
+        throw Exception(errorJson['message'] ?? 'Unknown error');
       }
     }
     throw Exception('Request failed: ${response.statusCode}');
@@ -78,7 +98,8 @@ class ApiService {
     final cookie = await _getCookie();
     final url = '$trpcUrl/$procedure?batch=1';
 
-    final body = jsonEncode({'0': input ?? {}});
+    // tRPC v11 uses {"json": input} format
+    final body = jsonEncode({'0': {'json': input ?? {}}});
 
     final response = await http.post(
       Uri.parse(url),
@@ -88,17 +109,24 @@ class ApiService {
 
     // Save cookie if returned
     final setCookie = response.headers['set-cookie'];
-    if (setCookie != null) {
+    if (setCookie != null && setCookie.isNotEmpty) {
       await _saveCookie(setCookie);
     }
 
     if (response.statusCode == 200) {
       final List<dynamic> data = jsonDecode(response.body);
       if (data.isNotEmpty && data[0]['result'] != null) {
-        return {'data': data[0]['result']['data'], 'success': true};
+        final rawData = data[0]['result']['data'];
+        return {'data': _extractData(rawData), 'success': true};
       }
       if (data.isNotEmpty && data[0]['error'] != null) {
-        final msg = data[0]['error']['message'] ?? 'Unknown error';
+        final errorJson = data[0]['error']['json'] ?? data[0]['error'];
+        final msg = errorJson['message'] ?? 'Unknown error';
+        // Check for UNAUTHORIZED code
+        if (errorJson['data']?['code'] == 'UNAUTHORIZED' ||
+            msg.contains('UNAUTHORIZED')) {
+          throw Exception('UNAUTHORIZED: $msg');
+        }
         throw Exception(msg);
       }
     }
