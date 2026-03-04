@@ -60,6 +60,120 @@ class _AdminTasksScreenState extends State<AdminTasksScreen> {
     }
   }
 
+  void _showTaskDetails(BuildContext context, Map<String, dynamic> task) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => DraggableScrollableSheet(
+        initialChildSize: 0.75,
+        maxChildSize: 0.95,
+        minChildSize: 0.5,
+        builder: (_, ctrl) => Container(
+          decoration: const BoxDecoration(
+            color: AppColors.card,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+          ),
+          child: Column(
+            children: [
+              Container(width: 40, height: 4, margin: const EdgeInsets.symmetric(vertical: 12), decoration: BoxDecoration(color: AppColors.border, borderRadius: BorderRadius.circular(2))),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: Row(
+                  children: [
+                    const Icon(Icons.assignment_outlined, color: AppColors.primary, size: 22),
+                    const SizedBox(width: 10),
+                    Expanded(child: Text(task['title'] ?? '', style: const TextStyle(color: AppColors.text, fontWeight: FontWeight.bold, fontSize: 18))),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(color: _statusColor(task['status']).withOpacity(0.15), borderRadius: BorderRadius.circular(20)),
+                      child: Text(_statusLabel(task['status']), style: TextStyle(color: _statusColor(task['status']), fontSize: 12, fontWeight: FontWeight.bold)),
+                    ),
+                  ],
+                ),
+              ),
+              const Divider(color: AppColors.border, height: 24),
+              Expanded(
+                child: ListView(
+                  controller: ctrl,
+                  padding: const EdgeInsets.symmetric(horizontal: 20),
+                  children: [
+                    _detailRow(Icons.person_outline, 'العميل', task['customerName']),
+                    _detailRow(Icons.engineering_outlined, 'الفني', task['technicianName']),
+                    _detailRow(Icons.calendar_today_outlined, 'تاريخ الجدولة', task['scheduledAt']?.toString().substring(0, 10)),
+                    _detailRow(Icons.access_time, 'وقت الوصول', task['estimatedArrivalAt'] != null ? 'وصول: ${task['estimatedArrivalAt'].toString().substring(11, 16)}' : null),
+                    _detailRow(Icons.attach_money, 'المبلغ', task['amount'] != null ? '${task['amount']} ج.م' : null),
+                    _detailRow(Icons.location_on_outlined, 'العنوان', task['address']),
+                    _detailRow(Icons.phone_outlined, 'هاتف العميل', task['customerPhone']),
+                    if (task['description'] != null) ...[
+                      const SizedBox(height: 12),
+                      const Text('الوصف', style: TextStyle(color: AppColors.muted, fontSize: 12, fontWeight: FontWeight.w600)),
+                      const SizedBox(height: 6),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(color: AppColors.bg, borderRadius: BorderRadius.circular(10)),
+                        child: Text(task['description'], style: const TextStyle(color: AppColors.text, fontSize: 14)),
+                      ),
+                    ],
+                    if (task['items'] != null && (task['items'] as List).isNotEmpty) ...[
+                      const SizedBox(height: 16),
+                      const Text('بنود المهمة', style: TextStyle(color: AppColors.muted, fontSize: 12, fontWeight: FontWeight.w600)),
+                      const SizedBox(height: 8),
+                      ...(task['items'] as List).asMap().entries.map((e) => Container(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(color: AppColors.bg, borderRadius: BorderRadius.circular(10)),
+                        child: Row(
+                          children: [
+                            Container(width: 28, height: 28, decoration: BoxDecoration(color: AppColors.primary, borderRadius: BorderRadius.circular(8)), child: Center(child: Text('${e.key + 1}', style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 12)))),
+                            const SizedBox(width: 10),
+                            Expanded(child: Text(e.value.toString(), style: const TextStyle(color: AppColors.text, fontSize: 13))),
+                          ],
+                        ),
+                      )),
+                    ],
+                    const SizedBox(height: 20),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: ElevatedButton.icon(
+                            onPressed: () { Navigator.pop(ctx); _showTaskWizard(task: task); },
+                            icon: const Icon(Icons.edit_outlined, size: 16),
+                            label: const Text('تعديل المهمة'),
+                            style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, foregroundColor: Colors.black),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 20),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _detailRow(IconData icon, String label, String? value) {
+    if (value == null || value.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Row(
+        children: [
+          Container(width: 36, height: 36, decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.1), borderRadius: BorderRadius.circular(8)), child: Icon(icon, color: AppColors.primary, size: 18)),
+          const SizedBox(width: 12),
+          Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(label, style: const TextStyle(color: AppColors.muted, fontSize: 11)),
+            Text(value, style: const TextStyle(color: AppColors.text, fontSize: 14, fontWeight: FontWeight.w500)),
+          ]),
+        ],
+      ),
+    );
+  }
+
   void _showTaskWizard({Map<String, dynamic>? task}) {
     showModalBottomSheet(
       context: context,
@@ -194,6 +308,11 @@ class _AdminTasksScreenState extends State<AdminTasksScreen> {
                             child: Row(
                               mainAxisAlignment: MainAxisAlignment.end,
                               children: [
+                                TextButton.icon(
+                                  onPressed: () => _showTaskDetails(context, task),
+                                  icon: const Icon(Icons.visibility_outlined, size: 16, color: Colors.blue),
+                                  label: const Text('التفاصيل', style: TextStyle(color: Colors.blue, fontSize: 13)),
+                                ),
                                 TextButton.icon(
                                   onPressed: () => _showTaskWizard(task: task),
                                   icon: const Icon(Icons.edit_outlined, size: 16, color: AppColors.primary),

@@ -73,7 +73,7 @@ class RoleSelectScreen extends StatelessWidget {
                 ),
                 const SizedBox(height: 12),
 
-                // Admin - navigates to admin login screen
+                // Admin - if already logged in as admin go directly, else show login
                 _RoleCard(
                   icon: Icons.dashboard_outlined,
                   title: 'مسؤول',
@@ -81,12 +81,17 @@ class RoleSelectScreen extends StatelessWidget {
                   color: const Color(0xFF7B4F1A),
                   badge: user?.isAdmin == true ? 'دورك الحالي' : null,
                   onTap: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => const AdminLoginScreen(),
-                      ),
-                    );
+                    if (user?.isAdmin == true) {
+                      // Already authenticated as admin, go directly
+                      Navigator.pushReplacementNamed(context, '/admin');
+                    } else {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const AdminLoginScreen(),
+                        ),
+                      );
+                    }
                   },
                 ),
 
