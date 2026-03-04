@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
 import '../../services/api_service.dart';
 import '../../utils/app_theme.dart';
 
@@ -61,7 +62,9 @@ class _AdminCustomersScreenState extends State<AdminCustomersScreen> {
     final emailCtrl = TextEditingController(text: user?['email'] ?? '');
     final phoneCtrl = TextEditingController(text: user?['phone'] ?? '');
     final addressCtrl = TextEditingController(text: user?['address'] ?? '');
+    final locationCtrl = TextEditingController(text: user?['location'] ?? '');
     String selectedRole = user?['role'] ?? 'user';
+    bool loadingLocation = false;
 
     showModalBottomSheet(
       context: context,
@@ -97,6 +100,61 @@ class _AdminCustomersScreenState extends State<AdminCustomersScreen> {
                 const SizedBox(height: 6),
                 TextField(controller: addressCtrl, style: const TextStyle(color: AppColors.text), decoration: _inputDecoration(hint: 'العنوان')),
                 const SizedBox(height: 12),
+                // ── حقل الموقع الجغرافي ──────────────────────────────────
+                Row(
+                  children: [
+                    const Expanded(
+                      child: Text('الموقع الجغرافي',
+                          style: TextStyle(color: AppColors.muted, fontSize: 13)),
+                    ),
+                    TextButton.icon(
+                      onPressed: loadingLocation ? null : () async {
+                        setModalState(() => loadingLocation = true);
+                        try {
+                          bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+                          if (!serviceEnabled) {
+                            setModalState(() => loadingLocation = false);
+                            return;
+                          }
+                          LocationPermission perm = await Geolocator.checkPermission();
+                          if (perm == LocationPermission.denied) {
+                            perm = await Geolocator.requestPermission();
+                          }
+                          if (perm == LocationPermission.deniedForever || perm == LocationPermission.denied) {
+                            setModalState(() => loadingLocation = false);
+                            return;
+                          }
+                          final pos = await Geolocator.getCurrentPosition(
+                              desiredAccuracy: LocationAccuracy.high);
+                          locationCtrl.text =
+                              '${pos.latitude.toStringAsFixed(5)},${pos.longitude.toStringAsFixed(5)}';
+                        } catch (_) {}
+                        setModalState(() => loadingLocation = false);
+                      },
+                      icon: loadingLocation
+                          ? const SizedBox(
+                              width: 14,
+                              height: 14,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary))
+                          : const Icon(Icons.my_location, size: 14, color: AppColors.primary),
+                      label: const Text('موقعي الحالي',
+                          style: TextStyle(color: AppColors.primary, fontSize: 12)),
+                      style: TextButton.styleFrom(padding: EdgeInsets.zero, minimumSize: Size.zero),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                TextField(
+                  controller: locationCtrl,
+                  style: const TextStyle(color: AppColors.text),
+                  decoration: _inputDecoration(hint: 'مثال: 31.17469,30.12870'),
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
+                ),
+                const SizedBox(height: 4),
+                const Text('أدخل خط العرض وخط الطول مفصولين بفاصلة، أو اضغط "موقعي الحالي"',
+                    style: TextStyle(color: AppColors.muted, fontSize: 11)),
+                const SizedBox(height: 12),
+                // ── الدور ────────────────────────────────────────────────
                 const Text('الدور', style: TextStyle(color: AppColors.muted, fontSize: 13)),
                 const SizedBox(height: 6),
                 DropdownButtonFormField<String>(
@@ -130,6 +188,7 @@ class _AdminCustomersScreenState extends State<AdminCustomersScreen> {
                             if (phoneCtrl.text.isNotEmpty) 'phone': phoneCtrl.text.trim(),
                             if (emailCtrl.text.isNotEmpty) 'email': emailCtrl.text.trim(),
                             if (addressCtrl.text.isNotEmpty) 'address': addressCtrl.text.trim(),
+                            if (locationCtrl.text.isNotEmpty) 'location': locationCtrl.text.trim(),
                           });
                           if (selectedRole != user['role']) {
                             await ApiService.mutate('clients.updateRole', input: {'userId': user['id'], 'role': selectedRole});
@@ -140,6 +199,7 @@ class _AdminCustomersScreenState extends State<AdminCustomersScreen> {
                             if (phoneCtrl.text.isNotEmpty) 'phone': phoneCtrl.text.trim(),
                             if (emailCtrl.text.isNotEmpty) 'email': emailCtrl.text.trim(),
                             if (addressCtrl.text.isNotEmpty) 'address': addressCtrl.text.trim(),
+                            if (locationCtrl.text.isNotEmpty) 'location': locationCtrl.text.trim(),
                             'role': selectedRole,
                           });
                         }
@@ -242,47 +302,58 @@ class _AdminCustomersScreenState extends State<AdminCustomersScreen> {
                       itemBuilder: (ctx, i) {
                         final u = filtered[i];
                         final role = u['role'] as String? ?? 'user';
-                        final roleLabel = {'user': 'عميل', 'technician': 'فني', 'admin': 'مسؤول', 'supervisor': 'مشرف'}[role] ?? role;
-                        final roleColor = {'user': const Color(0xFFD4920A), 'technician': const Color(0xFF2E7D32), 'admin': const Color(0xFF7B4F1A), 'supervisor': const Color(0xFF1565C0)}[role] ?? AppColors.muted;
-                        final name = u['name'] ?? '';
-                        final initial = name.isNotEmpty ? name[0] : '?';
-                        return Container(
-                          margin: const EdgeInsets.only(bottom: 10),
-                          padding: const EdgeInsets.all(14),
-                          decoration: BoxDecoration(color: AppColors.card, borderRadius: BorderRadius.circular(12), border: Border.all(color: AppColors.border)),
-                          child: Directionality(
-                            textDirection: TextDirection.rtl,
-                            child: Row(children: [
-                              CircleAvatar(
-                                backgroundColor: AppColors.primary.withOpacity(0.15),
-                                child: Text(initial, style: const TextStyle(color: AppColors.primary, fontWeight: FontWeight.bold)),
+                        final roleLabel = {'user': 'عميل', 'technician': 'فني', 'supervisor': 'مشرف', 'admin': 'مسؤول'}[role] ?? role;
+                        final roleColor = {'user': Colors.blue, 'technician': Colors.green, 'supervisor': Colors.orange, 'admin': AppColors.primary}[role] ?? AppColors.muted;
+                        return Directionality(
+                          textDirection: TextDirection.rtl,
+                          child: Card(
+                            margin: const EdgeInsets.only(bottom: 10),
+                            child: ListTile(
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                              leading: CircleAvatar(
+                                backgroundColor: roleColor.withOpacity(0.15),
+                                child: Text(
+                                  (u['name'] as String? ?? '?').isNotEmpty ? (u['name'] as String)[0].toUpperCase() : '?',
+                                  style: TextStyle(color: roleColor, fontWeight: FontWeight.bold),
+                                ),
                               ),
-                              const SizedBox(width: 12),
-                              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                                Row(children: [
-                                  Text(name, style: const TextStyle(color: AppColors.text, fontWeight: FontWeight.w600, fontSize: 14)),
-                                  const SizedBox(width: 8),
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                                    decoration: BoxDecoration(color: roleColor.withOpacity(0.15), borderRadius: BorderRadius.circular(20)),
-                                    child: Text(roleLabel, style: TextStyle(color: roleColor, fontSize: 10, fontWeight: FontWeight.w600)),
+                              title: Row(children: [
+                                Expanded(child: Text(u['name'] ?? '—', style: const TextStyle(color: AppColors.text, fontWeight: FontWeight.w600))),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: roleColor.withOpacity(0.15),
+                                    borderRadius: BorderRadius.circular(10),
+                                    border: Border.all(color: roleColor.withOpacity(0.3)),
                                   ),
-                                ]),
+                                  child: Text(roleLabel, style: TextStyle(color: roleColor, fontSize: 11)),
+                                ),
+                              ]),
+                              subtitle: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                                 if (u['phone'] != null && u['phone'] != '') ...[
-                                  const SizedBox(height: 3),
+                                  const SizedBox(height: 4),
                                   Text(u['phone'], style: const TextStyle(color: AppColors.muted, fontSize: 12)),
                                 ],
-                                if (u['email'] != null && u['email'] != '') ...[
+                                if (u['location'] != null && u['location'] != '') ...[
                                   const SizedBox(height: 2),
-                                  Text(u['email'], style: const TextStyle(color: AppColors.muted, fontSize: 11)),
+                                  Row(children: [
+                                    const Icon(Icons.location_on, color: AppColors.primary, size: 12),
+                                    const SizedBox(width: 4),
+                                    Text(u['location'], style: const TextStyle(color: AppColors.muted, fontSize: 11)),
+                                  ]),
                                 ],
-                              ])),
-                              Row(children: [
-                                GestureDetector(onTap: () => _showUserDialog(u), child: const Icon(Icons.edit_outlined, color: AppColors.muted, size: 20)),
-                                const SizedBox(width: 12),
-                                GestureDetector(onTap: () => _deleteUser(u), child: const Icon(Icons.delete_outline, color: AppColors.error, size: 20)),
                               ]),
-                            ]),
+                              trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                                IconButton(
+                                  icon: const Icon(Icons.edit_outlined, color: AppColors.muted, size: 20),
+                                  onPressed: () => _showUserDialog(Map<String, dynamic>.from(u)),
+                                ),
+                                IconButton(
+                                  icon: const Icon(Icons.delete_outline, color: AppColors.error, size: 20),
+                                  onPressed: () => _deleteUser(Map<String, dynamic>.from(u)),
+                                ),
+                              ]),
+                            ),
                           ),
                         );
                       },
