@@ -13,38 +13,61 @@ class TaskDetailScreen extends StatefulWidget {
 }
 
 class _TaskDetailScreenState extends State<TaskDetailScreen> {
-  late Map<String, dynamic> _task;
-  late List<Map<String, dynamic>> _items;
+  Map<String, dynamic>? _fullTask;
+  List<Map<String, dynamic>> _items = [];
+  bool _loadingTask = true;
   bool _paymentDone = false;
-  bool _isLoading = false;
+  bool _isCompleting = false;
   String _paymentMethod = 'cash';
   final _cashAmountCtrl = TextEditingController();
-  File? _transferPhoto;
   final _transferAmountCtrl = TextEditingController();
+  File? _transferPhoto;
   String? _estimatedArrival;
 
   @override
   void initState() {
     super.initState();
-    _task = Map<String, dynamic>.from(widget.task);
-    final rawItems = _task['items'];
-    if (rawItems != null && rawItems is List) {
-      _items = rawItems.map<Map<String, dynamic>>((item) {
-        if (item is Map) {
-          return {'text': item['text']?.toString() ?? item.toString(), 'done': item['done'] == true, 'photos': <File>[]};
-        }
-        return {'text': item.toString(), 'done': false, 'photos': <File>[]};
-      }).toList();
-    } else {
-      _items = [];
-    }
     _estimateArrival();
+    _loadFullTask();
   }
 
   void _estimateArrival() {
     final now = DateTime.now();
     final arrival = now.add(const Duration(minutes: 20));
-    setState(() => _estimatedArrival = '${arrival.hour.toString().padLeft(2, '0')}:${arrival.minute.toString().padLeft(2, '0')}');
+    _estimatedArrival = '${arrival.hour.toString().padLeft(2, '0')}:${arrival.minute.toString().padLeft(2, '0')}';
+  }
+
+  Future<void> _loadFullTask() async {
+    setState(() => _loadingTask = true);
+    try {
+      final taskId = widget.task['id'];
+      if (taskId == null) { setState(() { _fullTask = widget.task; _loadingTask = false; }); return; }
+
+      // Fetch full task with customer/technician details
+      final taskRes = await ApiService.query('tasks.byId', input: {'id': taskId});
+      final itemsRes = await ApiService.query('tasks.items', input: {'taskId': taskId});
+
+      final fullTask = taskRes['data'] ?? widget.task;
+      final rawItems = itemsRes['data'];
+
+      List<Map<String, dynamic>> items = [];
+      if (rawItems is List) {
+        items = rawItems.map<Map<String, dynamic>>((item) => {
+          'id': item['id'],
+          'text': item['description']?.toString() ?? '',
+          'done': item['isCompleted'] == true,
+          'photos': <File>[],
+        }).toList();
+      }
+
+      setState(() {
+        _fullTask = fullTask is Map ? Map<String, dynamic>.from(fullTask) : widget.task;
+        _items = items;
+        _loadingTask = false;
+      });
+    } catch (e) {
+      setState(() { _fullTask = widget.task; _loadingTask = false; });
+    }
   }
 
   Future<void> _callPhone(String phone) async {
@@ -93,6 +116,7 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
   }
 
   void _showPaymentSheet() {
+    final amount = _fullTask?['amount']?.toString() ?? '0';
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -107,7 +131,7 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
             const SizedBox(height: 16),
             const Text('تحصيل المبلغ', style: TextStyle(color: AppColors.text, fontWeight: FontWeight.bold, fontSize: 18)),
             const SizedBox(height: 4),
-            Text('المبلغ المطلوب: ${_task['amount'] ?? 0} ج.م', style: const TextStyle(color: AppColors.primary, fontWeight: FontWeight.bold, fontSize: 15)),
+            Text('المبلغ المطلوب: $amount ج.م', style: const TextStyle(color: AppColors.primary, fontWeight: FontWeight.bold, fontSize: 15)),
             const SizedBox(height: 16),
             Row(children: [
               Expanded(child: GestureDetector(
@@ -216,25 +240,41 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
   }
 
   Future<void> _completeTask() async {
-    setState(() => _isLoading = true);
+    setState(() => _isCompleting = true);
     try {
-      await ApiService.mutate('tasks.update', input: {'id': _task['id'], 'status': 'completed'});
-      setState(() { _task['status'] = 'completed'; _isLoading = false; });
+      await ApiService.mutate('tasks.update', input: {'id': _fullTask!['id'], 'status': 'completed', 'collectionType': _paymentMethod, 'collectionStatus': 'collected'});
+      setState(() { _fullTask!['status'] = 'completed'; _isCompleting = false; });
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تم إنهاء المهمة بنجاح ✓'), backgroundColor: Colors.green));
       Navigator.pop(context, true);
     } catch (_) {
-      setState(() => _isLoading = false);
+      setState(() => _isCompleting = false);
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final phone = _task['customerPhone']?.toString() ?? '';
-    final address = _task['address']?.toString() ?? '';
-    final amount = _task['amount']?.toString() ?? '0';
-    final clientName = _task['customerName']?.toString() ?? 'العميل';
-    final techName = _task['technicianName']?.toString() ?? '';
-    final status = _task['status']?.toString() ?? 'pending';
+    if (_loadingTask) {
+      return Directionality(
+        textDirection: TextDirection.rtl,
+        child: Scaffold(
+          backgroundColor: AppColors.bg,
+          appBar: AppBar(backgroundColor: AppColors.card, title: const Text('تفاصيل المهمة', style: TextStyle(color: AppColors.text)), iconTheme: const IconThemeData(color: AppColors.text)),
+          body: const Center(child: CircularProgressIndicator(color: AppColors.primary)),
+        ),
+      );
+    }
+
+    final task = _fullTask ?? widget.task;
+    final customer = task['customer'];
+    final technician = task['technician'];
+    final clientName = customer?['name']?.toString() ?? task['customerName']?.toString() ?? 'غير محدد';
+    final phone = customer?['phone']?.toString() ?? task['customerPhone']?.toString() ?? '';
+    final address = customer?['address']?.toString() ?? task['address']?.toString() ?? '';
+    final techName = technician?['name']?.toString() ?? task['technicianName']?.toString() ?? '';
+    final amount = task['amount']?.toString() ?? '0';
+    final status = task['status']?.toString() ?? 'pending';
+    final title = task['title']?.toString() ?? 'مهمة';
+    final notes = task['notes']?.toString() ?? '';
 
     return Directionality(
       textDirection: TextDirection.rtl,
@@ -242,7 +282,7 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
         backgroundColor: AppColors.bg,
         appBar: AppBar(
           backgroundColor: AppColors.card,
-          title: Text(_task['title'] ?? 'تفاصيل المهمة', style: const TextStyle(color: AppColors.text, fontWeight: FontWeight.bold, fontSize: 16)),
+          title: Text(title, style: const TextStyle(color: AppColors.text, fontWeight: FontWeight.bold, fontSize: 16)),
           iconTheme: const IconThemeData(color: AppColors.text),
           actions: [
             Container(
@@ -253,178 +293,194 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
             ),
           ],
         ),
-        body: ListView(
-          padding: const EdgeInsets.all(16),
-          children: [
-            // ── بيانات العميل ──
-            _sectionTitle(Icons.person_outline, 'بيانات العميل'),
-            Container(
-              padding: const EdgeInsets.all(14),
-              decoration: _cardDecor(),
-              child: Column(children: [
-                Row(children: [
-                  Container(width: 44, height: 44, decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.15), shape: BoxShape.circle), child: const Icon(Icons.person, color: AppColors.primary, size: 24)),
-                  const SizedBox(width: 12),
-                  Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Text(clientName, style: const TextStyle(color: AppColors.text, fontWeight: FontWeight.bold, fontSize: 16)),
-                    if (techName.isNotEmpty) Text('الفني: $techName', style: const TextStyle(color: AppColors.muted, fontSize: 12)),
-                  ])),
-                ]),
-                if (phone.isNotEmpty) ...[
-                  const SizedBox(height: 12),
-                  const Divider(color: AppColors.border, height: 1),
-                  const SizedBox(height: 12),
+        body: RefreshIndicator(
+          onRefresh: _loadFullTask,
+          color: AppColors.primary,
+          child: ListView(
+            padding: const EdgeInsets.all(16),
+            children: [
+              // ── بيانات العميل ──
+              _sectionTitle(Icons.person_outline, 'بيانات العميل'),
+              Container(
+                padding: const EdgeInsets.all(14),
+                decoration: _cardDecor(),
+                child: Column(children: [
                   Row(children: [
-                    const Icon(Icons.phone_outlined, color: AppColors.muted, size: 16),
-                    const SizedBox(width: 8),
-                    Expanded(child: Text(phone, style: const TextStyle(color: AppColors.text, fontSize: 14))),
-                    GestureDetector(
-                      onTap: () => _callPhone(phone),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-                        decoration: BoxDecoration(color: Colors.green.withOpacity(0.15), borderRadius: BorderRadius.circular(20)),
-                        child: Row(mainAxisSize: MainAxisSize.min, children: const [Icon(Icons.call, color: Colors.green, size: 15), SizedBox(width: 4), Text('اتصال', style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold, fontSize: 12))]),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    GestureDetector(
-                      onTap: () => _openWhatsApp(phone),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-                        decoration: BoxDecoration(color: const Color(0xFF25D366).withOpacity(0.15), borderRadius: BorderRadius.circular(20)),
-                        child: Row(mainAxisSize: MainAxisSize.min, children: const [Icon(Icons.chat, color: Color(0xFF25D366), size: 15), SizedBox(width: 4), Text('واتساب', style: TextStyle(color: Color(0xFF25D366), fontWeight: FontWeight.bold, fontSize: 12))]),
-                      ),
-                    ),
+                    Container(width: 44, height: 44, decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.15), shape: BoxShape.circle), child: const Icon(Icons.person, color: AppColors.primary, size: 24)),
+                    const SizedBox(width: 12),
+                    Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Text(clientName, style: const TextStyle(color: AppColors.text, fontWeight: FontWeight.bold, fontSize: 16)),
+                      if (techName.isNotEmpty) Text('الفني: $techName', style: const TextStyle(color: AppColors.muted, fontSize: 12)),
+                    ])),
                   ]),
-                ],
-              ]),
-            ),
-            const SizedBox(height: 12),
-
-            // ── العنوان والموقع ──
-            _sectionTitle(Icons.location_on_outlined, 'الموقع'),
-            Container(
-              padding: const EdgeInsets.all(14),
-              decoration: _cardDecor(),
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Row(children: [
-                  const Icon(Icons.home_outlined, color: AppColors.muted, size: 18),
-                  const SizedBox(width: 8),
-                  Expanded(child: Text(address.isNotEmpty ? address : 'لم يُحدد العنوان', style: const TextStyle(color: AppColors.text, fontSize: 14))),
-                ]),
-                if (address.isNotEmpty) ...[
-                  const SizedBox(height: 12),
-                  SizedBox(width: double.infinity, child: OutlinedButton.icon(
-                    onPressed: () => _openMaps(address),
-                    icon: const Icon(Icons.navigation_outlined, size: 18),
-                    label: const Text('توجيه للوجهة'),
-                    style: OutlinedButton.styleFrom(foregroundColor: AppColors.primary, side: const BorderSide(color: AppColors.primary), padding: const EdgeInsets.symmetric(vertical: 10), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
-                  )),
-                ],
-              ]),
-            ),
-            const SizedBox(height: 12),
-
-            // ── المبلغ ووقت الوصول ──
-            Row(children: [
-              Expanded(child: Container(
-                padding: const EdgeInsets.all(14),
-                decoration: _cardDecor(),
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Row(children: const [Icon(Icons.attach_money, color: AppColors.primary, size: 18), SizedBox(width: 6), Text('المبلغ', style: TextStyle(color: AppColors.muted, fontSize: 12))]),
-                  const SizedBox(height: 6),
-                  Text('$amount ج.م', style: const TextStyle(color: AppColors.text, fontWeight: FontWeight.bold, fontSize: 18)),
-                ]),
-              )),
-              const SizedBox(width: 12),
-              Expanded(child: Container(
-                padding: const EdgeInsets.all(14),
-                decoration: _cardDecor(),
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Row(children: const [Icon(Icons.access_time, color: Colors.blue, size: 18), SizedBox(width: 6), Text('وقت الوصول', style: TextStyle(color: AppColors.muted, fontSize: 12))]),
-                  const SizedBox(height: 6),
-                  Text(_estimatedArrival ?? '--:--', style: const TextStyle(color: AppColors.text, fontWeight: FontWeight.bold, fontSize: 18)),
-                  const Text('تقريباً', style: TextStyle(color: AppColors.muted, fontSize: 10)),
-                ]),
-              )),
-            ]),
-            const SizedBox(height: 16),
-
-            // ── بنود المهام ──
-            if (_items.isNotEmpty) ...[
-              _sectionTitle(Icons.checklist_outlined, 'بنود المهمة'),
-              ..._items.asMap().entries.map((entry) {
-                final i = entry.key;
-                final item = entry.value;
-                final photos = item['photos'] as List<File>;
-                return Container(
-                  margin: const EdgeInsets.only(bottom: 8),
-                  padding: const EdgeInsets.all(12),
-                  decoration: _cardDecor(),
-                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  if (phone.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    const Divider(color: AppColors.border, height: 1),
+                    const SizedBox(height: 12),
                     Row(children: [
+                      const Icon(Icons.phone_outlined, color: AppColors.muted, size: 16),
+                      const SizedBox(width: 8),
+                      Expanded(child: Text(phone, style: const TextStyle(color: AppColors.text, fontSize: 14))),
                       GestureDetector(
-                        onTap: () => _showPhotoSourceDialog(i),
-                        child: Container(width: 32, height: 32, decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.15), borderRadius: BorderRadius.circular(8)), child: const Icon(Icons.add_a_photo_outlined, color: AppColors.primary, size: 18)),
+                        onTap: () => _callPhone(phone),
+                        child: Container(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7), decoration: BoxDecoration(color: Colors.green.withOpacity(0.15), borderRadius: BorderRadius.circular(20)), child: Row(mainAxisSize: MainAxisSize.min, children: const [Icon(Icons.call, color: Colors.green, size: 15), SizedBox(width: 4), Text('اتصال', style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold, fontSize: 12))])),
                       ),
-                      const SizedBox(width: 10),
-                      Expanded(child: Text(item['text'], style: TextStyle(color: item['done'] ? AppColors.muted : AppColors.text, fontSize: 14, decoration: item['done'] ? TextDecoration.lineThrough : null))),
+                      const SizedBox(width: 8),
                       GestureDetector(
-                        onTap: () => setState(() => _items[i]['done'] = !item['done']),
-                        child: Container(
-                          width: 28, height: 28,
-                          decoration: BoxDecoration(color: item['done'] ? Colors.green.withOpacity(0.2) : AppColors.bg, borderRadius: BorderRadius.circular(6), border: Border.all(color: item['done'] ? Colors.green : AppColors.border, width: 1.5)),
-                          child: item['done'] ? const Icon(Icons.check, color: Colors.green, size: 18) : null,
-                        ),
+                        onTap: () => _openWhatsApp(phone),
+                        child: Container(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7), decoration: BoxDecoration(color: const Color(0xFF25D366).withOpacity(0.15), borderRadius: BorderRadius.circular(20)), child: Row(mainAxisSize: MainAxisSize.min, children: const [Icon(Icons.chat, color: Color(0xFF25D366), size: 15), SizedBox(width: 4), Text('واتساب', style: TextStyle(color: Color(0xFF25D366), fontWeight: FontWeight.bold, fontSize: 12))])),
                       ),
                     ]),
-                    if (photos.isNotEmpty) ...[
-                      const SizedBox(height: 8),
-                      SizedBox(height: 64, child: ListView(scrollDirection: Axis.horizontal, children: photos.map((f) => Container(margin: const EdgeInsets.only(left: 6), width: 64, height: 64, child: ClipRRect(borderRadius: BorderRadius.circular(8), child: Image.file(f, fit: BoxFit.cover)))).toList())),
-                    ],
-                  ]),
-                );
-              }).toList(),
-              const SizedBox(height: 8),
-            ],
-
-            // ── زر التحصيل ──
-            if (!_paymentDone && status != 'completed') ...[
-              _sectionTitle(Icons.payments_outlined, 'التحصيل'),
-              SizedBox(width: double.infinity, child: ElevatedButton.icon(
-                onPressed: _showPaymentSheet,
-                icon: const Icon(Icons.payments_outlined, color: Colors.black),
-                label: Text('تحصيل $amount ج.م', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: Colors.black)),
-                style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, padding: const EdgeInsets.symmetric(vertical: 14), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
-              )),
-              const SizedBox(height: 16),
-            ],
-
-            // ── زر إنهاء المهمة (بعد التحصيل فقط) ──
-            if (_paymentDone && status != 'completed') ...[
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(color: Colors.green.withOpacity(0.1), borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.green.withOpacity(0.3))),
-                child: Row(children: const [Icon(Icons.check_circle_outline, color: Colors.green, size: 20), SizedBox(width: 8), Text('تم تسجيل التحصيل بنجاح', style: TextStyle(color: Colors.green, fontWeight: FontWeight.w600))]),
+                  ] else ...[
+                    const SizedBox(height: 8),
+                    const Text('لم يُسجَّل رقم هاتف للعميل', style: TextStyle(color: AppColors.muted, fontSize: 13)),
+                  ],
+                ]),
               ),
               const SizedBox(height: 12),
-              SizedBox(width: double.infinity, child: ElevatedButton.icon(
-                onPressed: _isLoading ? null : _completeTask,
-                icon: _isLoading ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Icon(Icons.task_alt, color: Colors.white),
-                label: const Text('إنهاء المهمة', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: Colors.white)),
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.green, padding: const EdgeInsets.symmetric(vertical: 14), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
-              )),
-              const SizedBox(height: 16),
-            ],
 
-            if (status == 'completed')
+              // ── العنوان والموقع ──
+              _sectionTitle(Icons.location_on_outlined, 'الموقع'),
               Container(
                 padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(color: Colors.green.withOpacity(0.1), borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.green.withOpacity(0.3))),
-                child: Row(mainAxisAlignment: MainAxisAlignment.center, children: const [Icon(Icons.task_alt, color: Colors.green, size: 22), SizedBox(width: 8), Text('تم إنجاز هذه المهمة', style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold, fontSize: 15))]),
+                decoration: _cardDecor(),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Row(children: [
+                    const Icon(Icons.home_outlined, color: AppColors.muted, size: 18),
+                    const SizedBox(width: 8),
+                    Expanded(child: Text(address.isNotEmpty ? address : 'لم يُحدد العنوان', style: TextStyle(color: address.isNotEmpty ? AppColors.text : AppColors.muted, fontSize: 14))),
+                  ]),
+                  if (address.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    SizedBox(width: double.infinity, child: OutlinedButton.icon(
+                      onPressed: () => _openMaps(address),
+                      icon: const Icon(Icons.navigation_outlined, size: 18),
+                      label: const Text('توجيه للوجهة'),
+                      style: OutlinedButton.styleFrom(foregroundColor: AppColors.primary, side: const BorderSide(color: AppColors.primary), padding: const EdgeInsets.symmetric(vertical: 10), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
+                    )),
+                  ],
+                ]),
               ),
-            const SizedBox(height: 32),
-          ],
+              const SizedBox(height: 12),
+
+              // ── المبلغ ووقت الوصول ──
+              Row(children: [
+                Expanded(child: Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: _cardDecor(),
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Row(children: const [Icon(Icons.attach_money, color: AppColors.primary, size: 18), SizedBox(width: 6), Text('المبلغ', style: TextStyle(color: AppColors.muted, fontSize: 12))]),
+                    const SizedBox(height: 6),
+                    Text('$amount ج.م', style: const TextStyle(color: AppColors.text, fontWeight: FontWeight.bold, fontSize: 18)),
+                  ]),
+                )),
+                const SizedBox(width: 12),
+                Expanded(child: Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: _cardDecor(),
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Row(children: const [Icon(Icons.access_time, color: Colors.blue, size: 18), SizedBox(width: 6), Text('وقت الوصول', style: TextStyle(color: AppColors.muted, fontSize: 12))]),
+                    const SizedBox(height: 6),
+                    Text(_estimatedArrival ?? '--:--', style: const TextStyle(color: AppColors.text, fontWeight: FontWeight.bold, fontSize: 18)),
+                    const Text('تقريباً', style: TextStyle(color: AppColors.muted, fontSize: 10)),
+                  ]),
+                )),
+              ]),
+              const SizedBox(height: 12),
+
+              // ── الملاحظات ──
+              if (notes.isNotEmpty) ...[
+                _sectionTitle(Icons.notes_outlined, 'ملاحظات'),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(14),
+                  decoration: _cardDecor(),
+                  child: Text(notes, style: const TextStyle(color: AppColors.text, fontSize: 14, height: 1.5)),
+                ),
+                const SizedBox(height: 12),
+              ],
+
+              // ── بنود المهام ──
+              _sectionTitle(Icons.checklist_outlined, 'بنود المهمة'),
+              if (_items.isEmpty)
+                Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: _cardDecor(),
+                  child: const Text('لا توجد بنود محددة لهذه المهمة', style: TextStyle(color: AppColors.muted, fontSize: 13)),
+                )
+              else
+                ..._items.asMap().entries.map((entry) {
+                  final i = entry.key;
+                  final item = entry.value;
+                  final photos = item['photos'] as List<File>;
+                  return Container(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    padding: const EdgeInsets.all(12),
+                    decoration: _cardDecor(),
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Row(children: [
+                        GestureDetector(
+                          onTap: () => _showPhotoSourceDialog(i),
+                          child: Container(width: 32, height: 32, decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.15), borderRadius: BorderRadius.circular(8)), child: const Icon(Icons.add_a_photo_outlined, color: AppColors.primary, size: 18)),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(child: Text(item['text'], style: TextStyle(color: item['done'] ? AppColors.muted : AppColors.text, fontSize: 14, decoration: item['done'] ? TextDecoration.lineThrough : null))),
+                        GestureDetector(
+                          onTap: () => setState(() => _items[i]['done'] = !item['done']),
+                          child: Container(
+                            width: 28, height: 28,
+                            decoration: BoxDecoration(color: item['done'] ? Colors.green.withOpacity(0.2) : AppColors.bg, borderRadius: BorderRadius.circular(6), border: Border.all(color: item['done'] ? Colors.green : AppColors.border, width: 1.5)),
+                            child: item['done'] ? const Icon(Icons.check, color: Colors.green, size: 18) : null,
+                          ),
+                        ),
+                      ]),
+                      if (photos.isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        SizedBox(height: 64, child: ListView(scrollDirection: Axis.horizontal, children: photos.map((f) => Container(margin: const EdgeInsets.only(left: 6), width: 64, height: 64, child: ClipRRect(borderRadius: BorderRadius.circular(8), child: Image.file(f, fit: BoxFit.cover)))).toList())),
+                      ],
+                    ]),
+                  );
+                }).toList(),
+              const SizedBox(height: 16),
+
+              // ── زر التحصيل ──
+              if (!_paymentDone && status != 'completed') ...[
+                _sectionTitle(Icons.payments_outlined, 'التحصيل'),
+                SizedBox(width: double.infinity, child: ElevatedButton.icon(
+                  onPressed: _showPaymentSheet,
+                  icon: const Icon(Icons.payments_outlined, color: Colors.black),
+                  label: Text('تحصيل $amount ج.م', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: Colors.black)),
+                  style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, padding: const EdgeInsets.symmetric(vertical: 14), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+                )),
+                const SizedBox(height: 16),
+              ],
+
+              // ── زر إنهاء المهمة ──
+              if (_paymentDone && status != 'completed') ...[
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(color: Colors.green.withOpacity(0.1), borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.green.withOpacity(0.3))),
+                  child: Row(children: const [Icon(Icons.check_circle_outline, color: Colors.green, size: 20), SizedBox(width: 8), Text('تم تسجيل التحصيل بنجاح', style: TextStyle(color: Colors.green, fontWeight: FontWeight.w600))]),
+                ),
+                const SizedBox(height: 12),
+                SizedBox(width: double.infinity, child: ElevatedButton.icon(
+                  onPressed: _isCompleting ? null : _completeTask,
+                  icon: _isCompleting ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Icon(Icons.task_alt, color: Colors.white),
+                  label: const Text('إنهاء المهمة', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: Colors.white)),
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.green, padding: const EdgeInsets.symmetric(vertical: 14), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+                )),
+                const SizedBox(height: 16),
+              ],
+
+              if (status == 'completed')
+                Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(color: Colors.green.withOpacity(0.1), borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.green.withOpacity(0.3))),
+                  child: Row(mainAxisAlignment: MainAxisAlignment.center, children: const [Icon(Icons.task_alt, color: Colors.green, size: 22), SizedBox(width: 8), Text('تم إنجاز هذه المهمة', style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold, fontSize: 15))]),
+                ),
+              const SizedBox(height: 32),
+            ],
+          ),
         ),
       ),
     );
@@ -440,6 +496,7 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
   Color _statusColor(String status) {
     switch (status) {
       case 'pending': return const Color(0xFFD4920A);
+      case 'assigned': return Colors.orange;
       case 'in_progress': return Colors.blue;
       case 'completed': return Colors.green;
       case 'cancelled': return Colors.red;
@@ -450,6 +507,7 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
   String _statusLabel(String status) {
     switch (status) {
       case 'pending': return 'جديدة';
+      case 'assigned': return 'معينة';
       case 'in_progress': return 'جاري التنفيذ';
       case 'completed': return 'مكتملة';
       case 'cancelled': return 'ملغاة';
