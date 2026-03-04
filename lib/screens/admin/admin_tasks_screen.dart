@@ -103,17 +103,17 @@ class _AdminTasksScreenState extends State<AdminTasksScreen> {
                     _detailRow(Icons.calendar_today_outlined, 'تاريخ الجدولة', task['scheduledAt']?.toString().substring(0, 10)),
                     _detailRow(Icons.access_time, 'وقت الوصول', task['estimatedArrivalAt'] != null ? 'وصول: ${task['estimatedArrivalAt'].toString().substring(11, 16)}' : null),
                     _detailRow(Icons.attach_money, 'المبلغ', task['amount'] != null ? '${task['amount']} ج.م' : null),
-                    _detailRow(Icons.location_on_outlined, 'العنوان', task['address']),
+                    _detailRow(Icons.location_on_outlined, 'العنوان', task['customerAddress'] ?? task['address']),
                     _detailRow(Icons.phone_outlined, 'هاتف العميل', task['customerPhone']),
-                    if (task['description'] != null) ...[
+                    if (task['notes'] != null && task['notes'].toString().isNotEmpty) ...[
                       const SizedBox(height: 12),
-                      const Text('الوصف', style: TextStyle(color: AppColors.muted, fontSize: 12, fontWeight: FontWeight.w600)),
+                      const Text('ملاحظات', style: TextStyle(color: AppColors.muted, fontSize: 12, fontWeight: FontWeight.w600)),
                       const SizedBox(height: 6),
                       Container(
                         width: double.infinity,
                         padding: const EdgeInsets.all(12),
                         decoration: BoxDecoration(color: AppColors.bg, borderRadius: BorderRadius.circular(10)),
-                        child: Text(task['description'], style: const TextStyle(color: AppColors.text, fontSize: 14)),
+                        child: Text(task['notes'] ?? '', style: const TextStyle(color: AppColors.text, fontSize: 14)),
                       ),
                     ],
                     if (task['items'] != null && (task['items'] as List).isNotEmpty) ...[

@@ -22,33 +22,43 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
   final _cashAmountCtrl = TextEditingController();
   final _transferAmountCtrl = TextEditingController();
   File? _transferPhoto;
-  String? _estimatedArrival;
 
   @override
   void initState() {
     super.initState();
-    _estimateArrival();
     _loadFullTask();
-  }
-
-  void _estimateArrival() {
-    final now = DateTime.now();
-    final arrival = now.add(const Duration(minutes: 20));
-    _estimatedArrival = '${arrival.hour.toString().padLeft(2, '0')}:${arrival.minute.toString().padLeft(2, '0')}';
   }
 
   Future<void> _loadFullTask() async {
     setState(() => _loadingTask = true);
     try {
       final taskId = widget.task['id'];
-      if (taskId == null) { setState(() { _fullTask = widget.task; _loadingTask = false; }); return; }
+      if (taskId == null) {
+        setState(() { _fullTask = widget.task; _loadingTask = false; });
+        return;
+      }
 
       // Fetch full task with customer/technician details
-      final taskRes = await ApiService.query('tasks.byId', input: {'id': taskId});
-      final itemsRes = await ApiService.query('tasks.items', input: {'taskId': taskId});
+      final taskRes = await ApiService.query('tasks.byId', input: {'id': taskId is int ? taskId : int.tryParse(taskId.toString()) ?? taskId});
+      final itemsRes = await ApiService.query('tasks.items', input: {'taskId': taskId is int ? taskId : int.tryParse(taskId.toString()) ?? taskId});
 
-      final fullTask = taskRes['data'] ?? widget.task;
+      final rawTask = taskRes['data'];
       final rawItems = itemsRes['data'];
+
+      // Build full task merging byId data with list data (byId has customer/technician objects)
+      Map<String, dynamic> fullTask = {};
+      if (rawTask is Map) {
+        fullTask = Map<String, dynamic>.from(rawTask);
+      } else {
+        fullTask = Map<String, dynamic>.from(widget.task);
+      }
+
+      // Also merge in list-level fields if not already present (customerName, customerPhone, etc.)
+      for (final key in widget.task.keys) {
+        if (!fullTask.containsKey(key) || fullTask[key] == null) {
+          fullTask[key] = widget.task[key];
+        }
+      }
 
       List<Map<String, dynamic>> items = [];
       if (rawItems is List) {
@@ -61,12 +71,13 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
       }
 
       setState(() {
-        _fullTask = fullTask is Map ? Map<String, dynamic>.from(fullTask) : widget.task;
+        _fullTask = fullTask;
         _items = items;
         _loadingTask = false;
       });
     } catch (e) {
-      setState(() { _fullTask = widget.task; _loadingTask = false; });
+      // Fallback to widget.task data
+      setState(() { _fullTask = Map<String, dynamic>.from(widget.task); _loadingTask = false; });
     }
   }
 
@@ -77,7 +88,9 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
 
   Future<void> _openWhatsApp(String phone) async {
     final clean = phone.replaceAll(RegExp(r'[^0-9]'), '');
-    final uri = Uri.parse('https://wa.me/2$clean');
+    // Add country code if not present
+    final withCode = clean.startsWith('20') ? clean : '20$clean';
+    final uri = Uri.parse('https://wa.me/$withCode');
     if (await canLaunchUrl(uri)) await launchUrl(uri, mode: LaunchMode.externalApplication);
   }
 
@@ -200,7 +213,7 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
                   height: 140, width: double.infinity,
                   decoration: BoxDecoration(color: AppColors.bg, borderRadius: BorderRadius.circular(12), border: Border.all(color: _transferPhoto == null ? Colors.red.withOpacity(0.5) : Colors.green, width: 1.5)),
                   child: _transferPhoto == null
-                      ? Column(mainAxisAlignment: MainAxisAlignment.center, children: const [
+                      ? const Column(mainAxisAlignment: MainAxisAlignment.center, children: [
                           Icon(Icons.camera_alt_outlined, color: AppColors.primary, size: 32),
                           SizedBox(height: 8),
                           Text('التقط صورة إيصال التحويل (إلزامي)', style: TextStyle(color: AppColors.muted, fontSize: 13), textAlign: TextAlign.center),
@@ -265,16 +278,63 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
     }
 
     final task = _fullTask ?? widget.task;
-    final customer = task['customer'];
-    final technician = task['technician'];
-    final clientName = customer?['name']?.toString() ?? task['customerName']?.toString() ?? 'غير محدد';
-    final phone = customer?['phone']?.toString() ?? task['customerPhone']?.toString() ?? '';
-    final address = customer?['address']?.toString() ?? task['address']?.toString() ?? '';
-    final techName = technician?['name']?.toString() ?? task['technicianName']?.toString() ?? '';
+
+    // Extract customer info - from nested object OR from flat fields
+    final customerObj = task['customer'];
+    final clientName = (customerObj is Map ? customerObj['name'] : null)?.toString()
+        ?? task['customerName']?.toString()
+        ?? 'غير محدد';
+    final phone = (customerObj is Map ? customerObj['phone'] : null)?.toString()
+        ?? task['customerPhone']?.toString()
+        ?? '';
+    final address = (customerObj is Map ? customerObj['address'] : null)?.toString()
+        ?? task['customerAddress']?.toString()
+        ?? task['address']?.toString()
+        ?? '';
+
+    // Extract technician info
+    final technicianObj = task['technician'];
+    final techName = (technicianObj is Map ? technicianObj['name'] : null)?.toString()
+        ?? task['technicianName']?.toString()
+        ?? '';
+
     final amount = task['amount']?.toString() ?? '0';
     final status = task['status']?.toString() ?? 'pending';
     final title = task['title']?.toString() ?? 'مهمة';
     final notes = task['notes']?.toString() ?? '';
+
+    // Format estimated arrival time
+    String? estimatedArrival;
+    final arrivalRaw = task['estimatedArrivalAt'];
+    if (arrivalRaw != null) {
+      try {
+        final dt = DateTime.parse(arrivalRaw.toString()).toLocal();
+        estimatedArrival = '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+      } catch (_) {
+        estimatedArrival = arrivalRaw.toString().length > 15
+            ? arrivalRaw.toString().substring(11, 16)
+            : arrivalRaw.toString();
+      }
+    } else {
+      // Calculate estimated arrival as 20 min from now
+      final now = DateTime.now();
+      final arrival = now.add(const Duration(minutes: 20));
+      estimatedArrival = '${arrival.hour.toString().padLeft(2, '0')}:${arrival.minute.toString().padLeft(2, '0')}';
+    }
+
+    // Format scheduled date
+    String? scheduledDate;
+    final scheduledRaw = task['scheduledAt'];
+    if (scheduledRaw != null) {
+      try {
+        final dt = DateTime.parse(scheduledRaw.toString()).toLocal();
+        scheduledDate = '${dt.day}/${dt.month}/${dt.year}';
+      } catch (_) {
+        scheduledDate = scheduledRaw.toString().length >= 10
+            ? scheduledRaw.toString().substring(0, 10)
+            : scheduledRaw.toString();
+      }
+    }
 
     return Directionality(
       textDirection: TextDirection.rtl,
@@ -311,6 +371,7 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
                     Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                       Text(clientName, style: const TextStyle(color: AppColors.text, fontWeight: FontWeight.bold, fontSize: 16)),
                       if (techName.isNotEmpty) Text('الفني: $techName', style: const TextStyle(color: AppColors.muted, fontSize: 12)),
+                      if (scheduledDate != null) Text('الموعد: $scheduledDate', style: const TextStyle(color: AppColors.muted, fontSize: 12)),
                     ])),
                   ]),
                   if (phone.isNotEmpty) ...[
@@ -323,12 +384,12 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
                       Expanded(child: Text(phone, style: const TextStyle(color: AppColors.text, fontSize: 14))),
                       GestureDetector(
                         onTap: () => _callPhone(phone),
-                        child: Container(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7), decoration: BoxDecoration(color: Colors.green.withOpacity(0.15), borderRadius: BorderRadius.circular(20)), child: Row(mainAxisSize: MainAxisSize.min, children: const [Icon(Icons.call, color: Colors.green, size: 15), SizedBox(width: 4), Text('اتصال', style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold, fontSize: 12))])),
+                        child: Container(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7), decoration: BoxDecoration(color: Colors.green.withOpacity(0.15), borderRadius: BorderRadius.circular(20)), child: const Row(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.call, color: Colors.green, size: 15), SizedBox(width: 4), Text('اتصال', style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold, fontSize: 12))])),
                       ),
                       const SizedBox(width: 8),
                       GestureDetector(
                         onTap: () => _openWhatsApp(phone),
-                        child: Container(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7), decoration: BoxDecoration(color: const Color(0xFF25D366).withOpacity(0.15), borderRadius: BorderRadius.circular(20)), child: Row(mainAxisSize: MainAxisSize.min, children: const [Icon(Icons.chat, color: Color(0xFF25D366), size: 15), SizedBox(width: 4), Text('واتساب', style: TextStyle(color: Color(0xFF25D366), fontWeight: FontWeight.bold, fontSize: 12))])),
+                        child: Container(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7), decoration: BoxDecoration(color: const Color(0xFF25D366).withOpacity(0.15), borderRadius: BorderRadius.circular(20)), child: const Row(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.chat, color: Color(0xFF25D366), size: 15), SizedBox(width: 4), Text('واتساب', style: TextStyle(color: Color(0xFF25D366), fontWeight: FontWeight.bold, fontSize: 12))])),
                       ),
                     ]),
                   ] else ...[
@@ -369,7 +430,7 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
                   padding: const EdgeInsets.all(14),
                   decoration: _cardDecor(),
                   child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Row(children: const [Icon(Icons.attach_money, color: AppColors.primary, size: 18), SizedBox(width: 6), Text('المبلغ', style: TextStyle(color: AppColors.muted, fontSize: 12))]),
+                    const Row(children: [Icon(Icons.attach_money, color: AppColors.primary, size: 18), SizedBox(width: 6), Text('المبلغ', style: TextStyle(color: AppColors.muted, fontSize: 12))]),
                     const SizedBox(height: 6),
                     Text('$amount ج.م', style: const TextStyle(color: AppColors.text, fontWeight: FontWeight.bold, fontSize: 18)),
                   ]),
@@ -379,10 +440,10 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
                   padding: const EdgeInsets.all(14),
                   decoration: _cardDecor(),
                   child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Row(children: const [Icon(Icons.access_time, color: Colors.blue, size: 18), SizedBox(width: 6), Text('وقت الوصول', style: TextStyle(color: AppColors.muted, fontSize: 12))]),
+                    const Row(children: [Icon(Icons.access_time, color: Colors.blue, size: 18), SizedBox(width: 6), Text('وقت الوصول', style: TextStyle(color: AppColors.muted, fontSize: 12))]),
                     const SizedBox(height: 6),
-                    Text(_estimatedArrival ?? '--:--', style: const TextStyle(color: AppColors.text, fontWeight: FontWeight.bold, fontSize: 18)),
-                    const Text('تقريباً', style: TextStyle(color: AppColors.muted, fontSize: 10)),
+                    Text(estimatedArrival ?? '--:--', style: const TextStyle(color: AppColors.text, fontWeight: FontWeight.bold, fontSize: 18)),
+                    Text(task['estimatedArrivalAt'] != null ? 'المحدد' : 'تقريباً', style: const TextStyle(color: AppColors.muted, fontSize: 10)),
                   ]),
                 )),
               ]),
@@ -460,7 +521,7 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
                 Container(
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(color: Colors.green.withOpacity(0.1), borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.green.withOpacity(0.3))),
-                  child: Row(children: const [Icon(Icons.check_circle_outline, color: Colors.green, size: 20), SizedBox(width: 8), Text('تم تسجيل التحصيل بنجاح', style: TextStyle(color: Colors.green, fontWeight: FontWeight.w600))]),
+                  child: const Row(children: [Icon(Icons.check_circle_outline, color: Colors.green, size: 20), SizedBox(width: 8), Text('تم تسجيل التحصيل بنجاح', style: TextStyle(color: Colors.green, fontWeight: FontWeight.w600))]),
                 ),
                 const SizedBox(height: 12),
                 SizedBox(width: double.infinity, child: ElevatedButton.icon(
@@ -476,7 +537,7 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
                 Container(
                   padding: const EdgeInsets.all(14),
                   decoration: BoxDecoration(color: Colors.green.withOpacity(0.1), borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.green.withOpacity(0.3))),
-                  child: Row(mainAxisAlignment: MainAxisAlignment.center, children: const [Icon(Icons.task_alt, color: Colors.green, size: 22), SizedBox(width: 8), Text('تم إنجاز هذه المهمة', style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold, fontSize: 15))]),
+                  child: const Row(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(Icons.task_alt, color: Colors.green, size: 22), SizedBox(width: 8), Text('تم إنجاز هذه المهمة', style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold, fontSize: 15))]),
                 ),
               const SizedBox(height: 32),
             ],
