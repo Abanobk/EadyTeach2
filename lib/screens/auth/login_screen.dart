@@ -3,6 +3,8 @@ import 'package:provider/provider.dart';
 import '../../providers/auth_provider.dart';
 import '../../utils/app_theme.dart';
 import '../../services/api_service.dart';
+import '../../services/google_auth_service.dart';
+import 'signup_screen.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -16,6 +18,7 @@ class _LoginScreenState extends State<LoginScreen> {
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   bool _loading = false;
+  bool _googleLoading = false;
   bool _obscurePassword = true;
   String? _error;
 
@@ -34,14 +37,70 @@ class _LoginScreenState extends State<LoginScreen> {
     });
 
     try {
-      // Use adminLogin procedure (supports admin accounts)
-      final result = await ApiService.mutate(
-        'auth.adminLogin',
-        input: {
-          'email': _emailController.text.trim(),
-          'password': _passwordController.text,
-        },
-      );
+      // Try adminLogin first (for admins/staff), then userLogin (for customers)
+      Map<String, dynamic>? result;
+      try {
+        result = await ApiService.mutate(
+          'auth.adminLogin',
+          input: {
+            'email': _emailController.text.trim(),
+            'password': _passwordController.text,
+          },
+        );
+      } catch (adminErr) {
+        // If admin login fails, try user login
+        final errMsg = adminErr.toString();
+        if (errMsg.contains('UNAUTHORIZED') || errMsg.contains('غير صحيح')) {
+          result = await ApiService.mutate(
+            'auth.userLogin',
+            input: {
+              'email': _emailController.text.trim(),
+              'password': _passwordController.text,
+            },
+          );
+        } else {
+          rethrow;
+        }
+      }
+
+      if (!mounted) return;
+
+      if (result != null && result['success'] == true) {
+        final auth = context.read<AuthProvider>();
+        await auth.checkAuth();
+        if (!mounted) return;
+        if (auth.isLoggedIn) {
+          Navigator.pushReplacementNamed(context, '/role-select');
+        } else {
+          setState(() => _error = 'تم تسجيل الدخول لكن تعذّر تحميل البيانات.');
+        }
+      }
+    } catch (e) {
+      if (!mounted) return;
+      final errMsg = e.toString();
+      if (errMsg.contains('UNAUTHORIZED') || errMsg.contains('غير صحيح') || errMsg.contains('غير نشط')) {
+        setState(() => _error = 'البريد الإلكتروني أو كلمة المرور غير صحيحة');
+      } else {
+        setState(() => _error = 'حدث خطأ. تأكد من الاتصال بالإنترنت.');
+      }
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _googleSignIn() async {
+    setState(() {
+      _googleLoading = true;
+      _error = null;
+    });
+
+    try {
+      final result = await GoogleAuthService.signIn();
+      if (result == null) {
+        // User cancelled
+        setState(() => _googleLoading = false);
+        return;
+      }
 
       if (!mounted) return;
 
@@ -57,14 +116,9 @@ class _LoginScreenState extends State<LoginScreen> {
       }
     } catch (e) {
       if (!mounted) return;
-      final errMsg = e.toString();
-      if (errMsg.contains('UNAUTHORIZED') || errMsg.contains('غير صحيح')) {
-        setState(() => _error = 'البريد الإلكتروني أو كلمة المرور غير صحيحة');
-      } else {
-        setState(() => _error = 'حدث خطأ. تأكد من الاتصال بالإنترنت.');
-      }
+      setState(() => _error = 'فشل تسجيل الدخول بـ Google. حاول مرة أخرى.');
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) setState(() => _googleLoading = false);
     }
   }
 
@@ -129,7 +183,81 @@ class _LoginScreenState extends State<LoginScreen> {
                     textAlign: TextAlign.center,
                   ),
 
-                  const SizedBox(height: 48),
+                  const SizedBox(height: 40),
+
+                  // Google Sign In button
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton(
+                      onPressed: _googleLoading ? null : _googleSignIn,
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        side: const BorderSide(color: Color(0xFF3C3C3C), width: 1.5),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        backgroundColor: AppColors.card,
+                      ),
+                      child: _googleLoading
+                          ? const SizedBox(
+                              height: 20,
+                              width: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                // Google logo
+                                Container(
+                                  width: 22,
+                                  height: 22,
+                                  decoration: const BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    color: Colors.white,
+                                  ),
+                                  child: const Center(
+                                    child: Text(
+                                      'G',
+                                      style: TextStyle(
+                                        color: Color(0xFF4285F4),
+                                        fontWeight: FontWeight.w900,
+                                        fontSize: 14,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 10),
+                                const Text(
+                                  'تسجيل الدخول بـ Google',
+                                  style: TextStyle(
+                                    color: AppColors.text,
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ),
+                    ),
+                  ),
+
+                  const SizedBox(height: 20),
+
+                  // Divider
+                  Row(
+                    children: [
+                      Expanded(child: Divider(color: AppColors.muted.withOpacity(0.3))),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        child: Text(
+                          'أو',
+                          style: TextStyle(color: AppColors.muted.withOpacity(0.7), fontSize: 13),
+                        ),
+                      ),
+                      Expanded(child: Divider(color: AppColors.muted.withOpacity(0.3))),
+                    ],
+                  ),
+
+                  const SizedBox(height: 20),
 
                   // Error message
                   if (_error != null) ...[
@@ -143,20 +271,18 @@ class _LoginScreenState extends State<LoginScreen> {
                       ),
                       child: Row(
                         children: [
-                          const Icon(Icons.error_outline,
-                              color: AppColors.error, size: 18),
+                          const Icon(Icons.error_outline, color: AppColors.error, size: 18),
                           const SizedBox(width: 8),
                           Expanded(
                             child: Text(
                               _error!,
-                              style: const TextStyle(
-                                  color: AppColors.error, fontSize: 13),
+                              style: const TextStyle(color: AppColors.error, fontSize: 13),
                             ),
                           ),
                         ],
                       ),
                     ),
-                    const SizedBox(height: 20),
+                    const SizedBox(height: 16),
                   ],
 
                   // Email field
@@ -179,8 +305,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     decoration: InputDecoration(
                       hintText: 'example@email.com',
                       hintStyle: const TextStyle(color: AppColors.muted),
-                      prefixIcon: const Icon(Icons.email_outlined,
-                          color: AppColors.muted),
+                      prefixIcon: const Icon(Icons.email_outlined, color: AppColors.muted),
                       filled: true,
                       fillColor: AppColors.card,
                       border: OutlineInputBorder(
@@ -189,11 +314,9 @@ class _LoginScreenState extends State<LoginScreen> {
                       ),
                       focusedBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(12),
-                        borderSide: const BorderSide(
-                            color: AppColors.primary, width: 1.5),
+                        borderSide: const BorderSide(color: AppColors.primary, width: 1.5),
                       ),
-                      contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 16, vertical: 14),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                     ),
                     validator: (v) {
                       if (v == null || v.isEmpty) return 'أدخل البريد الإلكتروني';
@@ -224,11 +347,9 @@ class _LoginScreenState extends State<LoginScreen> {
                     decoration: InputDecoration(
                       hintText: '••••••••',
                       hintStyle: const TextStyle(color: AppColors.muted),
-                      prefixIcon: const Icon(Icons.lock_outline,
-                          color: AppColors.muted),
+                      prefixIcon: const Icon(Icons.lock_outline, color: AppColors.muted),
                       suffixIcon: GestureDetector(
-                        onTap: () => setState(
-                            () => _obscurePassword = !_obscurePassword),
+                        onTap: () => setState(() => _obscurePassword = !_obscurePassword),
                         child: Icon(
                           _obscurePassword
                               ? Icons.visibility_outlined
@@ -244,11 +365,9 @@ class _LoginScreenState extends State<LoginScreen> {
                       ),
                       focusedBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(12),
-                        borderSide: const BorderSide(
-                            color: AppColors.primary, width: 1.5),
+                        borderSide: const BorderSide(color: AppColors.primary, width: 1.5),
                       ),
-                      contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 16, vertical: 14),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                     ),
                     validator: (v) {
                       if (v == null || v.isEmpty) return 'أدخل كلمة المرور';
@@ -257,7 +376,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     onFieldSubmitted: (_) => _login(),
                   ),
 
-                  const SizedBox(height: 36),
+                  const SizedBox(height: 28),
 
                   // Login button
                   SizedBox(
@@ -294,6 +413,35 @@ class _LoginScreenState extends State<LoginScreen> {
                               ],
                             ),
                     ),
+                  ),
+
+                  const SizedBox(height: 20),
+
+                  // Sign Up link
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const Text(
+                        'ليس لديك حساب؟ ',
+                        style: TextStyle(color: AppColors.muted, fontSize: 14),
+                      ),
+                      GestureDetector(
+                        onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(builder: (_) => const SignupScreen()),
+                          );
+                        },
+                        child: const Text(
+                          'إنشاء حساب جديد',
+                          style: TextStyle(
+                            color: AppColors.primary,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
 
                   const SizedBox(height: 40),
