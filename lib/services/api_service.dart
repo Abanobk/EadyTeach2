@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -88,6 +89,24 @@ class ApiService {
       }
     }
     throw Exception('Request failed: ${response.statusCode}');
+  }
+
+  /// Upload a file to S3 via the server upload endpoint
+  static Future<String> uploadFile(String filePath) async {
+    final cookie = await _getCookie();
+    final file = File(filePath);
+    final request = http.MultipartRequest('POST', Uri.parse('$baseUrl/api/upload-file'));
+    if (cookie != null && cookie.isNotEmpty) {
+      request.headers['Cookie'] = cookie;
+    }
+    request.files.add(await http.MultipartFile.fromPath('file', file.path));
+    final streamed = await request.send();
+    final response = await http.Response.fromStream(streamed);
+    if (response.statusCode == 200) {
+      final json = jsonDecode(response.body);
+      return json['url'] as String;
+    }
+    throw Exception('Upload failed: \${response.statusCode}');
   }
 
   /// tRPC Mutation (POST)

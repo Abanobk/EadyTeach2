@@ -1,13 +1,14 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:intl/intl.dart';
 import '../../utils/app_theme.dart';
 import '../../services/api_service.dart';
 
+// ══════════════════════════════════════════════════════════════════════════════
+// شاشة تفاصيل المهمة - مطابقة للويب
+// ══════════════════════════════════════════════════════════════════════════════
 class TaskDetailScreen extends StatefulWidget {
   final Map<String, dynamic> task;
   const TaskDetailScreen({super.key, required this.task});
@@ -20,10 +21,24 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
   Map<String, dynamic>? _fullTask;
   List<Map<String, dynamic>> _items = [];
   bool _loadingTask = true;
-  bool _isCompleting = false;
-  File? _transferPhoto;
-  String? _estimatedArrival;
-  bool _loadingETA = false;
+
+  // Collection state
+  String? _collectionMode; // 'cash' | 'transfer' | null
+  final _cashAmountCtrl = TextEditingController();
+  bool _cashConfirmed = false;
+  String? _transferImageUrl;
+  bool _uploading = false;
+  File? _transferImageFile;
+
+  // ETA
+  int? _etaMinutes;
+  bool _etaLoading = false;
+
+  // Finish task
+  bool _finishing = false;
+
+  // Item media uploading state
+  final Map<int, bool> _mediaUploading = {};
 
   @override
   void initState() {
@@ -31,15 +46,20 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
     _loadFullTask();
   }
 
+  @override
+  void dispose() {
+    _cashAmountCtrl.dispose();
+    super.dispose();
+  }
+
+  // ── Data Loading ─────────────────────────────────────────────────────────
+
   Future<void> _loadFullTask() async {
     setState(() => _loadingTask = true);
     try {
       final taskId = widget.task['id'];
       if (taskId == null) {
-        setState(() {
-          _fullTask = widget.task;
-          _loadingTask = false;
-        });
+        setState(() { _fullTask = widget.task; _loadingTask = false; });
         return;
       }
       final id = taskId is int ? taskId : int.tryParse(taskId.toString()) ?? taskId;
@@ -54,7 +74,6 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
           ? Map<String, dynamic>.from(rawTask)
           : Map<String, dynamic>.from(widget.task);
 
-      // Merge list-level fields (customerName, customerPhone, etc.) if not present
       for (final key in widget.task.keys) {
         if (!fullTask.containsKey(key) || fullTask[key] == null) {
           fullTask[key] = widget.task[key];
@@ -63,9 +82,7 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
 
       List<Map<String, dynamic>> items = [];
       if (rawItems is List) {
-        items = rawItems
-            .map<Map<String, dynamic>>((item) => Map<String, dynamic>.from(item as Map))
-            .toList();
+        items = rawItems.map<Map<String, dynamic>>((item) => Map<String, dynamic>.from(item as Map)).toList();
       }
 
       setState(() {
@@ -81,81 +98,81 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
     }
   }
 
-  // ── Data helpers ──────────────────────────────────────────────────────────
+  // ── Helpers ───────────────────────────────────────────────────────────────
 
-  String? _getCustomerName() {
+  Map<String, dynamic>? get _customer {
     final t = _fullTask ?? widget.task;
     final c = t['customer'];
-    if (c is Map) return c['name']?.toString();
-    return t['customerName']?.toString();
+    if (c is Map) return Map<String, dynamic>.from(c);
+    // fallback from flat fields
+    final name = t['customerName']?.toString();
+    final phone = t['customerPhone']?.toString();
+    final address = t['customerAddress']?.toString();
+    final location = t['customerLocation']?.toString();
+    if (name != null || phone != null) {
+      return {'name': name, 'phone': phone, 'address': address, 'location': location};
+    }
+    return null;
   }
 
-  String? _getCustomerPhone() {
-    final t = _fullTask ?? widget.task;
-    final c = t['customer'];
-    if (c is Map) return c['phone']?.toString();
-    return t['customerPhone']?.toString();
-  }
-
-  String? _getCustomerAddress() {
-    final t = _fullTask ?? widget.task;
-    final c = t['customer'];
-    if (c is Map) return c['address']?.toString();
-    return t['customerAddress']?.toString();
-  }
-
-  String? _getCustomerLocation() {
-    final t = _fullTask ?? widget.task;
-    final c = t['customer'];
-    if (c is Map) return c['location']?.toString();
-    return t['customerLocation']?.toString();
-  }
-
-  String? _getTechnicianName() {
+  Map<String, dynamic>? get _technician {
     final t = _fullTask ?? widget.task;
     final tech = t['technician'];
-    if (tech is Map) return tech['name']?.toString();
-    return t['technicianName']?.toString();
+    if (tech is Map) return Map<String, dynamic>.from(tech);
+    final name = t['technicianName']?.toString();
+    if (name != null) return {'name': name};
+    return null;
   }
 
-  String _formatDate(String? dateStr) {
-    if (dateStr == null) return '—';
+  String _formatDateTime(String? dt) {
+    if (dt == null) return '—';
     try {
-      final dt = DateTime.parse(dateStr).toLocal();
-      return DateFormat('EEEE، d MMMM yyyy – hh:mm a', 'ar').format(dt);
-    } catch (_) {
-      return dateStr;
+      final parsed = DateTime.parse(dt).toLocal();
+      final days = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
+      final months = ['يناير', 'فبراير', 'مارس', 'إبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'];
+      final day = days[parsed.weekday % 7];
+      final month = months[parsed.month - 1];
+      final hour = parsed.hour > 12 ? parsed.hour - 12 : (parsed.hour == 0 ? 12 : parsed.hour);
+      final ampm = parsed.hour >= 12 ? 'م' : 'ص';
+      final min = parsed.minute.toString().padLeft(2, '0');
+      return '$day، ${parsed.day} $month ${parsed.year} – $hour:$min $ampm';
+    } catch (_) { return dt; }
+  }
+
+  String _statusLabel(String s) {
+    switch (s) {
+      case 'pending': return 'قيد الانتظار';
+      case 'assigned': return 'مخصصة';
+      case 'in_progress': return 'قيد التنفيذ';
+      case 'completed': return '✓ مكتملة';
+      case 'cancelled': return 'ملغية';
+      default: return s;
     }
   }
 
-  Color _statusColor(String status) {
-    switch (status) {
+  Color _statusColor(String s) {
+    switch (s) {
       case 'pending': return Colors.orange;
       case 'assigned': return Colors.blue;
-      case 'in_progress': return Colors.purple;
+      case 'in_progress': return AppColors.primary;
       case 'completed': return Colors.green;
       case 'cancelled': return Colors.red;
       default: return AppColors.muted;
     }
   }
 
-  String _statusLabel(String status) {
-    switch (status) {
-      case 'pending': return 'قيد الانتظار';
-      case 'assigned': return 'تم التعيين';
-      case 'in_progress': return 'جاري';
-      case 'completed': return 'مكتمل';
-      case 'cancelled': return 'ملغي';
-      default: return status;
-    }
+  bool get _isCompleted => (_fullTask ?? widget.task)['status'] == 'completed';
+
+  bool get _canFinish {
+    if (_isCompleted) return false;
+    if (_collectionMode == 'cash') return _cashConfirmed;
+    if (_collectionMode == 'transfer') return _transferImageUrl != null && _transferImageUrl!.isNotEmpty;
+    return false;
   }
+
+  bool get _allItemsDone => _items.isNotEmpty && _items.every((i) => i['isCompleted'] == true);
 
   // ── Actions ───────────────────────────────────────────────────────────────
-
-  Future<void> _callPhone(String phone) async {
-    final uri = Uri.parse('tel:$phone');
-    if (await canLaunchUrl(uri)) await launchUrl(uri);
-  }
 
   Future<void> _openWhatsApp(String phone) async {
     final cleaned = phone.replaceAll(RegExp(r'[^\d]'), '');
@@ -164,63 +181,39 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
     if (await canLaunchUrl(uri)) await launchUrl(uri, mode: LaunchMode.externalApplication);
   }
 
-  Future<void> _openDirections(String location) async {
-    final parts = location.split(',');
-    if (parts.length < 2) return;
-    final lat = parts[0].trim();
-    final lng = parts[1].trim();
-    final uri = Uri.parse('https://maps.google.com/maps?daddr=$lat,$lng');
+  Future<void> _callPhone(String phone) async {
+    final uri = Uri.parse('tel:$phone');
+    if (await canLaunchUrl(uri)) await launchUrl(uri);
+  }
+
+  Future<void> _openDirections(double lat, double lng) async {
+    final uri = Uri.parse('https://www.google.com/maps/dir/?api=1&destination=$lat,$lng');
     if (await canLaunchUrl(uri)) await launchUrl(uri, mode: LaunchMode.externalApplication);
   }
 
-  Future<void> _calculateETA(String customerLocation) async {
-    setState(() {
-      _loadingETA = true;
-      _estimatedArrival = null;
-    });
+  Future<void> _calcEta(double destLat, double destLng) async {
+    setState(() { _etaLoading = true; _etaMinutes = null; });
     try {
       bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
-        setState(() {
-          _loadingETA = false;
-          _estimatedArrival = 'خدمة الموقع غير مفعّلة';
-        });
+        _showSnack('خدمة الموقع غير مفعّلة', Colors.red);
+        setState(() => _etaLoading = false);
         return;
       }
-      LocationPermission permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
-      }
-      if (permission == LocationPermission.deniedForever ||
-          permission == LocationPermission.denied) {
-        setState(() {
-          _loadingETA = false;
-          _estimatedArrival = 'تم رفض إذن الموقع';
-        });
+      LocationPermission perm = await Geolocator.checkPermission();
+      if (perm == LocationPermission.denied) perm = await Geolocator.requestPermission();
+      if (perm == LocationPermission.denied || perm == LocationPermission.deniedForever) {
+        _showSnack('تم رفض إذن الموقع', Colors.red);
+        setState(() => _etaLoading = false);
         return;
       }
-      final pos = await Geolocator.getCurrentPosition(
-          desiredAccuracy: LocationAccuracy.high);
-      final parts = customerLocation.split(',');
-      final destLat = double.tryParse(parts[0].trim()) ?? 0;
-      final destLng = double.tryParse(parts[1].trim()) ?? 0;
-
-      final distanceMeters = Geolocator.distanceBetween(
-          pos.latitude, pos.longitude, destLat, destLng);
-      final distanceKm = distanceMeters / 1000;
-      final minutes = (distanceKm / 30 * 60).round();
-      final arrival = DateTime.now().add(Duration(minutes: minutes));
-      final formatted = DateFormat('hh:mm a', 'ar').format(arrival);
-      setState(() {
-        _loadingETA = false;
-        _estimatedArrival =
-            '~$minutes دقيقة (${distanceKm.toStringAsFixed(1)} كم) — وصول: $formatted';
-      });
-    } catch (e) {
-      setState(() {
-        _loadingETA = false;
-        _estimatedArrival = 'تعذّر حساب الوقت';
-      });
+      final pos = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
+      final distM = Geolocator.distanceBetween(pos.latitude, pos.longitude, destLat, destLng);
+      final mins = (distM / 1000 / 30 * 60).round();
+      setState(() { _etaMinutes = mins; _etaLoading = false; });
+    } catch (_) {
+      _showSnack('تعذّر حساب وقت الوصول', Colors.red);
+      setState(() => _etaLoading = false);
     }
   }
 
@@ -228,8 +221,7 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
     final newVal = !(item['isCompleted'] as bool? ?? false);
     setState(() => item['isCompleted'] = newVal);
     try {
-      await ApiService.mutate('tasks.updateItem',
-          input: {'id': item['id'], 'isCompleted': newVal});
+      await ApiService.mutate('tasks.updateItem', input: {'id': item['id'], 'isCompleted': newVal});
     } catch (_) {
       setState(() => item['isCompleted'] = !newVal);
     }
@@ -238,55 +230,55 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
   Future<void> _pickTransferPhoto() async {
     final picker = ImagePicker();
     final picked = await picker.pickImage(source: ImageSource.gallery, imageQuality: 70);
-    if (picked != null) setState(() => _transferPhoto = File(picked.path));
+    if (picked == null) return;
+    setState(() { _uploading = true; _transferImageFile = File(picked.path); });
+    try {
+      // Upload to server
+      final result = await ApiService.uploadFile(picked.path);
+      setState(() {
+        _transferImageUrl = result;
+        _uploading = false;
+      });
+    } catch (_) {
+      // Fallback: use local file path as placeholder
+      setState(() {
+        _transferImageUrl = picked.path;
+        _uploading = false;
+      });
+    }
   }
 
-  Future<void> _completeTask() async {
+  Future<void> _finishTask() async {
     final task = _fullTask ?? widget.task;
     final taskId = task['id'];
     if (taskId == null) return;
     final id = taskId is int ? taskId : int.tryParse(taskId.toString()) ?? taskId;
 
-    setState(() => _isCompleting = true);
+    setState(() => _finishing = true);
     try {
-      await ApiService.mutate('tasks.update', input: {
+      final input = <String, dynamic>{
         'id': id,
         'status': 'completed',
+        'collectionStatus': 'collected',
         'completedAt': DateTime.now().toUtc().toIso8601String(),
-      });
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content: Text('تم إنهاء المهمة بنجاح ✅'),
-              backgroundColor: Colors.green),
-        );
-        Navigator.pop(context, true);
+      };
+      if (_collectionMode == 'transfer' && _transferImageUrl != null) {
+        input['collectionImageUrl'] = _transferImageUrl;
       }
+      await ApiService.mutate('tasks.update', input: input);
+      _showSnack('تم إنهاء المهمة بنجاح! ✅', Colors.green);
+      if (mounted) Navigator.pop(context, true);
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('خطأ: $e'), backgroundColor: Colors.red),
-        );
-      }
+      _showSnack('خطأ: $e', Colors.red);
     }
-    setState(() => _isCompleting = false);
+    setState(() => _finishing = false);
   }
 
-  Future<void> _notifyArrival() async {
-    final task = _fullTask ?? widget.task;
-    final taskId = task['id'];
-    if (taskId == null) return;
-    final id = taskId is int ? taskId : int.tryParse(taskId.toString()) ?? taskId;
-    try {
-      await ApiService.mutate('tasks.notifyArrival', input: {'taskId': id});
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content: Text('تم إرسال إشعار الوصول ✅'),
-              backgroundColor: Colors.green),
-        );
-      }
-    } catch (_) {}
+  void _showSnack(String msg, Color color) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), backgroundColor: color),
+    );
   }
 
   // ── Build ─────────────────────────────────────────────────────────────────
@@ -296,11 +288,8 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
     if (_loadingTask) {
       return Scaffold(
         backgroundColor: AppColors.bg,
-        appBar: AppBar(
-            backgroundColor: AppColors.card,
-            title: const Text('تفاصيل المهمة')),
-        body: const Center(
-            child: CircularProgressIndicator(color: AppColors.primary)),
+        appBar: AppBar(backgroundColor: AppColors.card, title: const Text('تفاصيل المهمة')),
+        body: const Center(child: CircularProgressIndicator(color: AppColors.primary)),
       );
     }
 
@@ -308,472 +297,534 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
     final status = task['status']?.toString() ?? 'pending';
     final taskId = task['id']?.toString() ?? '';
     final title = task['title']?.toString() ?? 'مهمة';
-    final customerName = _getCustomerName();
-    final customerPhone = _getCustomerPhone();
-    final customerAddress = _getCustomerAddress();
-    final customerLocation = _getCustomerLocation();
-    final technicianName = _getTechnicianName();
+    final customer = _customer;
+    final technician = _technician;
     final scheduledAt = task['scheduledAt']?.toString();
     final amount = task['amount']?.toString();
     final collectionType = task['collectionType']?.toString();
     final notes = task['notes']?.toString();
-    final hasCustomer = customerName != null || customerPhone != null || customerAddress != null;
 
-    return Scaffold(
+    // Parse customer location
+    double? clientLat, clientLng;
+    final locStr = customer?['location']?.toString();
+    if (locStr != null && locStr.isNotEmpty) {
+      final parts = locStr.split(',');
+      if (parts.length >= 2) {
+        clientLat = double.tryParse(parts[0].trim());
+        clientLng = double.tryParse(parts[1].trim());
+      }
+    }
+
+    return Directionality(
+      textDirection: TextDirection.rtl,
+      child: Scaffold(
         backgroundColor: AppColors.bg,
         appBar: AppBar(
           backgroundColor: AppColors.card,
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back_ios_new, color: AppColors.primary, size: 18),
+            onPressed: () => Navigator.pop(context),
+          ),
           title: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text('TASK #$taskId',
-                  style: const TextStyle(
-                      color: AppColors.primary, fontSize: 11, letterSpacing: 1)),
+                  style: const TextStyle(color: AppColors.primary, fontSize: 10, letterSpacing: 2, fontWeight: FontWeight.bold)),
               Text(title,
-                  style: const TextStyle(
-                      color: AppColors.text,
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold)),
+                  style: const TextStyle(color: AppColors.text, fontSize: 16, fontWeight: FontWeight.w900)),
             ],
           ),
           actions: [
             Container(
-              margin: const EdgeInsets.only(left: 12),
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              margin: const EdgeInsets.only(left: 16, right: 4),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
               decoration: BoxDecoration(
                 color: _statusColor(status).withOpacity(0.15),
-                borderRadius: BorderRadius.circular(20),
+                borderRadius: BorderRadius.circular(50),
                 border: Border.all(color: _statusColor(status).withOpacity(0.4)),
               ),
               child: Text(_statusLabel(status),
-                  style: TextStyle(
-                      color: _statusColor(status),
-                      fontSize: 12,
-                      fontWeight: FontWeight.bold)),
+                  style: TextStyle(color: _statusColor(status), fontSize: 11, fontWeight: FontWeight.bold)),
             ),
           ],
         ),
         body: ListView(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
           children: [
-            // ── بيانات العميل ─────────────────────────────────────────────
-            if (hasCustomer) ...[
-              _sectionTitle('بيانات العميل', Icons.person_outline),
-              _card([
-                if (customerName != null)
-                  _infoRow(Icons.person, customerName, sub: 'عميل'),
-                if (customerPhone != null) ...[
-                  _divider(),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
-                    child: Row(children: [
-                      const Icon(Icons.phone, color: AppColors.muted, size: 18),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                          const Text('رقم الهاتف',
-                              style: TextStyle(color: AppColors.muted, fontSize: 11)),
-                          Text(customerPhone,
-                              style: const TextStyle(
-                                  color: AppColors.text,
-                                  fontSize: 15,
-                                  fontWeight: FontWeight.w600)),
-                        ]),
+
+            // ── بيانات العميل ──────────────────────────────────────────────
+            if (customer != null) ...[
+              _sectionCard(
+                label: 'بيانات العميل',
+                children: [
+                  // الاسم
+                  Row(children: [
+                    Container(
+                      width: 42, height: 42,
+                      decoration: BoxDecoration(
+                        color: AppColors.primary.withOpacity(0.2),
+                        shape: BoxShape.circle,
                       ),
-                      _actionBtn('واتساب', Icons.chat, const Color(0xFF25D366),
-                          () => _openWhatsApp(customerPhone)),
-                      const SizedBox(width: 8),
-                      _actionBtn('اتصال', Icons.phone, Colors.blue,
-                          () => _callPhone(customerPhone)),
-                    ]),
-                  ),
-                ],
-                if (customerAddress != null) ...[
-                  _divider(),
-                  _infoRow(Icons.location_on_outlined, customerAddress, label: 'العنوان'),
-                ],
-                if (customerLocation != null && customerLocation.isNotEmpty) ...[
-                  _divider(),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
-                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                      Row(children: [
-                        const Icon(Icons.map_outlined, color: AppColors.muted, size: 18),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                            const Text('الموقع الجغرافي',
-                                style: TextStyle(color: AppColors.muted, fontSize: 11)),
-                            Text(customerLocation,
-                                style: const TextStyle(color: AppColors.text, fontSize: 13)),
-                          ]),
+                      child: Center(
+                        child: Text(
+                          (customer['name'] ?? '؟').toString().isNotEmpty
+                              ? (customer['name'] ?? '؟').toString()[0].toUpperCase()
+                              : '؟',
+                          style: const TextStyle(color: AppColors.primary, fontSize: 18, fontWeight: FontWeight.w900),
                         ),
-                      ]),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Text(customer['name'] ?? '—',
+                          style: const TextStyle(color: AppColors.text, fontSize: 16, fontWeight: FontWeight.bold)),
+                      const Text('عميل', style: TextStyle(color: AppColors.muted, fontSize: 12)),
+                    ]),
+                  ]),
+
+                  // رقم الهاتف + أزرار
+                  if (customer['phone'] != null) ...[
+                    const SizedBox(height: 16),
+                    Row(children: [
+                      Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        const Text('رقم الهاتف', style: TextStyle(color: AppColors.muted, fontSize: 11)),
+                        const SizedBox(height: 2),
+                        Text(customer['phone'], style: const TextStyle(color: AppColors.text, fontSize: 16, fontWeight: FontWeight.bold)),
+                      ])),
+                      _webBtn('📞 اتصال', const Color(0xFF4A90D9), () => _callPhone(customer['phone'])),
+                      const SizedBox(width: 8),
+                      _webBtn('💬 واتساب', const Color(0xFF25D366), () => _openWhatsApp(customer['phone'])),
+                    ]),
+                  ],
+
+                  // العنوان
+                  if (customer['address'] != null && customer['address'].toString().isNotEmpty) ...[
+                    const SizedBox(height: 16),
+                    _labelValue('العنوان', customer['address'].toString()),
+                  ],
+
+                  // الموقع الجغرافي
+                  ...[
+                    const SizedBox(height: 16),
+                    const Text('الموقع الجغرافي', style: TextStyle(color: AppColors.muted, fontSize: 11)),
+                    const SizedBox(height: 6),
+                    if (clientLat != null && clientLng != null) ...[
+                      Text(
+                        '${clientLat.toStringAsFixed(5)}, ${clientLng.toStringAsFixed(5)}',
+                        style: const TextStyle(color: AppColors.text, fontSize: 13, fontFamily: 'monospace'),
+                      ),
                       const SizedBox(height: 10),
                       Row(children: [
                         Expanded(
-                          child: _locationBtn(
-                            'تحديد الاتجاهات',
-                            Icons.navigation,
+                          child: _webBtn(
+                            '🗺️ تحديد الاتجاهات',
                             AppColors.primary,
-                            () => _openDirections(customerLocation),
+                            () => _openDirections(clientLat!, clientLng!),
+                            fullWidth: true,
                           ),
                         ),
                         const SizedBox(width: 8),
                         Expanded(
-                          child: _locationBtn(
-                            'وقت الوصول',
-                            Icons.access_time,
-                            Colors.purple,
-                            _loadingETA ? null : () => _calculateETA(customerLocation),
-                            loading: _loadingETA,
+                          child: _webBtn(
+                            _etaLoading ? '⏳ جاري الحساب...' : '⏱️ وقت الوصول المتوقع',
+                            const Color(0xFF9B59B6),
+                            _etaLoading ? null : () => _calcEta(clientLat!, clientLng!),
+                            fullWidth: true,
                           ),
                         ),
                       ]),
-                      if (_estimatedArrival != null) ...[
+                      if (_etaMinutes != null) ...[
                         const SizedBox(height: 8),
                         Container(
                           width: double.infinity,
-                          padding: const EdgeInsets.all(10),
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                           decoration: BoxDecoration(
-                            color: Colors.purple.withOpacity(0.08),
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(color: Colors.purple.withOpacity(0.3)),
+                            color: const Color(0xFF9B59B6).withOpacity(0.15),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: const Color(0xFF9B59B6).withOpacity(0.4)),
                           ),
-                          child: Row(children: [
-                            const Icon(Icons.schedule, color: Colors.purple, size: 16),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(_estimatedArrival!,
-                                  style: const TextStyle(color: Colors.purple, fontSize: 13)),
-                            ),
-                          ]),
+                          child: Text(
+                            '⏱️ وقت الوصول المتوقع: ${_etaMinutes! < 60 ? '${_etaMinutes!} دقيقة' : '${_etaMinutes! ~/ 60} ساعة ${_etaMinutes! % 60} دقيقة'}',
+                            style: const TextStyle(color: Color(0xFF9B59B6), fontWeight: FontWeight.bold, fontSize: 13),
+                          ),
                         ),
                       ],
-                    ]),
-                  ),
+                    ] else ...[
+                      const Text('لا يوجد موقع مسجّل للعميل', style: TextStyle(color: AppColors.muted, fontSize: 13)),
+                    ],
+                  ],
                 ],
-              ]),
+              ),
               const SizedBox(height: 16),
             ],
 
-            // ── تفاصيل المهمة ─────────────────────────────────────────────
-            _sectionTitle('تفاصيل المهمة', Icons.assignment_outlined),
-            _card([
-              if (technicianName != null)
-                _infoRow(Icons.engineering_outlined, technicianName, label: 'الفني المعين'),
-              if (scheduledAt != null) ...[
-                _divider(),
-                _infoRow(Icons.calendar_today_outlined, _formatDate(scheduledAt),
-                    label: 'وقت الوصول المحدد'),
+            // ── تفاصيل المهمة ──────────────────────────────────────────────
+            _sectionCard(
+              label: 'تفاصيل المهمة',
+              children: [
+                // Grid: الفني + الموعد + المبلغ + طريقة الدفع
+                Row(children: [
+                  Expanded(child: _labelValue('الفني المعيّن', technician?['name'] ?? '—')),
+                  Expanded(child: _labelValue('وقت الوصول المحدد', _formatDateTime(scheduledAt))),
+                ]),
+                const SizedBox(height: 14),
+                Row(children: [
+                  Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    const Text('المبلغ المطلوب', style: TextStyle(color: AppColors.muted, fontSize: 11)),
+                    const SizedBox(height: 2),
+                    Text(
+                      '${amount ?? '—'} ج.م',
+                      style: const TextStyle(color: AppColors.primary, fontSize: 20, fontWeight: FontWeight.w900),
+                    ),
+                  ])),
+                  Expanded(child: _labelValue(
+                    'طريقة التحصيل',
+                    collectionType == 'cash' ? '💵 نقدي' : collectionType == 'transfer' ? '🏦 تحويل' : '—',
+                  )),
+                ]),
+                if (notes != null && notes.isNotEmpty) ...[
+                  const SizedBox(height: 14),
+                  _labelValue('ملاحظات', notes),
+                ],
               ],
-              if (amount != null && amount.isNotEmpty) ...[
-                _divider(),
-                _infoRow(Icons.attach_money, 'ج.م $amount',
-                    label: 'المبلغ المطلوب', valueColor: AppColors.primary),
-              ],
-              if (collectionType != null) ...[
-                _divider(),
-                _infoRow(
-                  collectionType == 'cash' ? Icons.money : Icons.account_balance,
-                  collectionType == 'cash' ? 'نقدي 💵' : 'تحويل 🏦',
-                  label: 'طريقة التحصيل',
-                ),
-              ],
-              if (notes != null && notes.isNotEmpty) ...[
-                _divider(),
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
-                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    const Row(children: [
-                      Icon(Icons.notes, color: AppColors.muted, size: 18),
-                      SizedBox(width: 8),
-                      Text('ملاحظات',
-                          style: TextStyle(color: AppColors.muted, fontSize: 11)),
-                    ]),
-                    const SizedBox(height: 6),
-                    Text(notes, style: const TextStyle(color: AppColors.text, fontSize: 14)),
-                  ]),
-                ),
-              ],
-            ]),
+            ),
             const SizedBox(height: 16),
 
-            // ── بنود المهمة ───────────────────────────────────────────────
-            if (_items.isNotEmpty) ...[
-              _sectionTitle('بنود المهمة', Icons.checklist_outlined),
-              _card([
-                ..._items.asMap().entries.map((entry) {
-                  final i = entry.key;
-                  final item = entry.value;
-                  final done = item['isCompleted'] as bool? ?? false;
-                  return Column(children: [
-                    if (i > 0) _divider(),
-                    InkWell(
-                      onTap: () => _toggleItem(item),
-                      borderRadius: BorderRadius.circular(8),
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
-                        child: Row(children: [
-                          Container(
-                            width: 22,
-                            height: 22,
+            // ── بنود المهمة ────────────────────────────────────────────────
+            _sectionCard(
+              label: 'بنود المهمة',
+              trailing: _allItemsDone && _items.isNotEmpty
+                  ? Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: Colors.green.withOpacity(0.15),
+                        borderRadius: BorderRadius.circular(50),
+                      ),
+                      child: const Text('✓ جميع البنود مكتملة',
+                          style: TextStyle(color: Colors.green, fontSize: 11, fontWeight: FontWeight.bold)),
+                    )
+                  : null,
+              children: [
+                if (_items.isEmpty)
+                  const Center(
+                    child: Padding(
+                      padding: EdgeInsets.symmetric(vertical: 16),
+                      child: Text('لا توجد بنود', style: TextStyle(color: AppColors.muted, fontSize: 13)),
+                    ),
+                  )
+                else
+                  ..._items.map((item) {
+                    final done = item['isCompleted'] as bool? ?? false;
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 10),
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: done ? Colors.green.withOpacity(0.08) : AppColors.bg,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                          color: done ? Colors.green.withOpacity(0.3) : AppColors.border,
+                        ),
+                      ),
+                      child: Row(children: [
+                        GestureDetector(
+                          onTap: _isCompleted ? null : () => _toggleItem(item),
+                          child: Container(
+                            width: 24, height: 24,
                             decoration: BoxDecoration(
-                              color: done ? AppColors.primary : Colors.transparent,
-                              borderRadius: BorderRadius.circular(4),
+                              color: done ? Colors.green : Colors.transparent,
+                              borderRadius: BorderRadius.circular(5),
                               border: Border.all(
-                                color: done ? AppColors.primary : AppColors.border,
-                                width: 1.5,
+                                color: done ? Colors.green : AppColors.border,
+                                width: 2,
                               ),
                             ),
                             child: done
-                                ? const Icon(Icons.check, color: Colors.black, size: 14)
+                                ? const Icon(Icons.check, color: Colors.white, size: 14)
                                 : null,
                           ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Text(
-                              item['description']?.toString() ?? '',
-                              style: TextStyle(
-                                color: done ? AppColors.muted : AppColors.text,
-                                fontSize: 14,
-                                decoration: done ? TextDecoration.lineThrough : null,
-                              ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            item['description']?.toString() ?? '',
+                            style: TextStyle(
+                              color: done ? Colors.green : AppColors.text,
+                              fontSize: 14,
+                              fontWeight: FontWeight.w500,
+                              decoration: done ? TextDecoration.lineThrough : null,
                             ),
                           ),
-                        ]),
+                        ),
+                      ]),
+                    );
+                  }),
+              ],
+            ),
+            const SizedBox(height: 16),
+
+            // ── التحصيل ────────────────────────────────────────────────────
+            if (!_isCompleted) ...[
+              _sectionCard(
+                label: 'التحصيل',
+                children: [
+                  // أزرار اختيار طريقة الدفع
+                  Row(children: [
+                    Expanded(child: _collectionModeBtn('💵 نقدي', 'cash')),
+                    const SizedBox(width: 12),
+                    Expanded(child: _collectionModeBtn('🏦 تحويل', 'transfer')),
+                  ]),
+
+                  // نقدي
+                  if (_collectionMode == 'cash' && !_cashConfirmed) ...[
+                    const SizedBox(height: 16),
+                    const Text('المبلغ المحصّل', style: TextStyle(color: AppColors.muted, fontSize: 12)),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: _cashAmountCtrl,
+                      keyboardType: TextInputType.number,
+                      textAlign: TextAlign.right,
+                      style: const TextStyle(color: AppColors.text, fontSize: 18, fontWeight: FontWeight.bold),
+                      decoration: InputDecoration(
+                        hintText: amount ?? '0',
+                        hintStyle: const TextStyle(color: AppColors.muted),
+                        filled: true,
+                        fillColor: AppColors.bg,
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: AppColors.border)),
+                        enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: AppColors.border)),
+                        focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: AppColors.primary, width: 1.5)),
                       ),
                     ),
-                  ]);
-                }),
-              ]),
-              const SizedBox(height: 16),
-            ],
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        onPressed: () {
+                          if (_cashAmountCtrl.text.trim().isEmpty) {
+                            _showSnack('أدخل المبلغ أولاً', Colors.red);
+                            return;
+                          }
+                          setState(() => _cashConfirmed = true);
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppColors.primary,
+                          foregroundColor: Colors.black,
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                        ),
+                        child: const Text('✓ تأكيد التحصيل', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 15)),
+                      ),
+                    ),
+                  ],
 
-            // ── التحصيل ───────────────────────────────────────────────────
-            if (status != 'completed' && status != 'cancelled') ...[
-              _sectionTitle('التحصيل', Icons.payments_outlined),
-              _card([
-                Padding(
-                  padding: const EdgeInsets.all(4),
-                  child: Row(children: [
-                    Expanded(
-                      child: _paymentTypeCard('نقدي', '💵', collectionType == 'cash'),
+                  if (_collectionMode == 'cash' && _cashConfirmed) ...[
+                    const SizedBox(height: 12),
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      decoration: BoxDecoration(
+                        color: Colors.green.withOpacity(0.15),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Text(
+                        '✓ تم تأكيد تحصيل ${_cashAmountCtrl.text} ج.م نقداً',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: Colors.green, fontWeight: FontWeight.bold, fontSize: 14),
+                      ),
                     ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: _paymentTypeCard('تحويل', '🏦', collectionType == 'transfer'),
-                    ),
-                  ]),
-                ),
-                if (collectionType == 'transfer') ...[
-                  _divider(),
-                  Padding(
-                    padding: const EdgeInsets.all(8),
-                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                      const Text('صورة إيصال التحويل',
-                          style: TextStyle(color: AppColors.muted, fontSize: 12)),
-                      const SizedBox(height: 8),
+                  ],
+
+                  // تحويل
+                  if (_collectionMode == 'transfer') ...[
+                    const SizedBox(height: 16),
+                    const Text('يجب رفع صورة إثبات التحويل قبل إنهاء المهمة',
+                        style: TextStyle(color: AppColors.muted, fontSize: 13)),
+                    const SizedBox(height: 12),
+                    if (_transferImageUrl == null) ...[
                       GestureDetector(
-                        onTap: _pickTransferPhoto,
+                        onTap: _uploading ? null : _pickTransferPhoto,
                         child: Container(
-                          height: 100,
                           width: double.infinity,
+                          padding: const EdgeInsets.symmetric(vertical: 20),
                           decoration: BoxDecoration(
                             color: AppColors.bg,
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(color: AppColors.border),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: AppColors.border, width: 2, style: BorderStyle.solid),
                           ),
-                          child: _transferPhoto != null
-                              ? ClipRRect(
-                                  borderRadius: BorderRadius.circular(8),
-                                  child: Image.file(_transferPhoto!, fit: BoxFit.cover))
-                              : const Column(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    Icon(Icons.cloud_upload_outlined,
-                                        color: AppColors.muted, size: 28),
-                                    SizedBox(height: 4),
-                                    Text('اضغط لرفع الصورة',
-                                        style: TextStyle(
-                                            color: AppColors.muted, fontSize: 12)),
-                                  ],
-                                ),
+                          child: Column(children: [
+                            Icon(_uploading ? Icons.hourglass_empty : Icons.camera_alt_outlined,
+                                color: AppColors.muted, size: 28),
+                            const SizedBox(height: 6),
+                            Text(_uploading ? '⏳ جاري الرفع...' : '📷 رفع صورة التحويل',
+                                style: const TextStyle(color: AppColors.muted, fontWeight: FontWeight.bold)),
+                          ]),
                         ),
                       ),
-                    ]),
-                  ),
+                    ] else ...[
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(10),
+                        child: _transferImageFile != null
+                            ? Image.file(_transferImageFile!, height: 180, width: double.infinity, fit: BoxFit.cover)
+                            : Container(height: 100, color: AppColors.border,
+                                child: const Center(child: Icon(Icons.image, color: AppColors.muted))),
+                      ),
+                      const SizedBox(height: 8),
+                      const Center(
+                        child: Text('✓ تم رفع صورة التحويل',
+                            style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold)),
+                      ),
+                      const SizedBox(height: 8),
+                      SizedBox(
+                        width: double.infinity,
+                        child: OutlinedButton(
+                          onPressed: () => setState(() { _transferImageUrl = null; _transferImageFile = null; }),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: AppColors.muted,
+                            side: const BorderSide(color: AppColors.border),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                          ),
+                          child: const Text('تغيير الصورة'),
+                        ),
+                      ),
+                    ],
+                  ],
                 ],
-              ]),
+              ),
               const SizedBox(height: 16),
             ],
 
-            // ── أزرار الإجراءات ───────────────────────────────────────────
-            if (status != 'completed' && status != 'cancelled') ...[
-              if (status == 'assigned' || status == 'in_progress') ...[
-                OutlinedButton.icon(
-                  onPressed: _notifyArrival,
-                  icon: const Icon(Icons.notifications_active_outlined),
-                  label: const Text('إرسال إشعار الوصول'),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: Colors.orange,
-                    side: const BorderSide(color: Colors.orange),
-                    minimumSize: const Size(double.infinity, 48),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(10)),
+            // ── زر إنهاء المهمة ────────────────────────────────────────────
+            if (!_isCompleted && _canFinish) ...[
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: _finishing ? null : _finishTask,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.green,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 18),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                   ),
-                ),
-                const SizedBox(height: 10),
-              ],
-              ElevatedButton.icon(
-                onPressed: _isCompleting ? null : _completeTask,
-                icon: _isCompleting
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(
-                            strokeWidth: 2, color: Colors.black))
-                    : const Icon(Icons.check_circle_outline),
-                label: Text(_isCompleting ? 'جاري الإنهاء...' : 'إنهاء المهمة ✓'),
-                style: ElevatedButton.styleFrom(
-                  minimumSize: const Size(double.infinity, 52),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10)),
+                  child: _finishing
+                      ? const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.white))
+                      : const Text('✅ إنهاء المهمة', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w900)),
                 ),
               ),
               const SizedBox(height: 24),
             ],
+
+            // ── بانر المهمة المكتملة ────────────────────────────────────────
+            if (_isCompleted) ...[
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 20),
+                decoration: BoxDecoration(
+                  color: Colors.green.withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: Colors.green.withOpacity(0.3)),
+                ),
+                child: Column(children: [
+                  const Text('✅ تم إنهاء هذه المهمة بنجاح',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Colors.green, fontSize: 17, fontWeight: FontWeight.w900)),
+                  if (((_fullTask ?? widget.task)['completedAt']) != null) ...[
+                    const SizedBox(height: 6),
+                    Text(
+                      _formatDateTime((_fullTask ?? widget.task)['completedAt']?.toString()),
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Colors.green.withOpacity(0.7), fontSize: 12),
+                    ),
+                  ],
+                ]),
+              ),
+              const SizedBox(height: 24),
+            ],
+
           ],
-         ),
+        ),
+      ),
     );
   }
+
   // ── UI Helpers ────────────────────────────────────────────────────────────
 
-  Widget _sectionTitle(String title, IconData icon) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Row(children: [
-        Icon(icon, color: AppColors.primary, size: 18),
-        const SizedBox(width: 8),
-        Text(title,
-            style: const TextStyle(
-                color: AppColors.primary,
-                fontSize: 14,
-                fontWeight: FontWeight.bold,
-                letterSpacing: 0.5)),
-      ]),
-    );
-  }
-
-  Widget _card(List<Widget> children) {
+  Widget _sectionCard({required String label, required List<Widget> children, Widget? trailing}) {
     return Container(
+      padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         color: AppColors.card,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(14),
         border: Border.all(color: AppColors.border),
       ),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-        child: Column(children: children),
-      ),
-    );
-  }
-
-  Widget _divider() => const Divider(color: AppColors.border, height: 1);
-
-  Widget _infoRow(IconData icon, String value,
-      {String? label, String? sub, Color? valueColor}) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
-      child: Row(children: [
-        Icon(icon, color: AppColors.muted, size: 18),
-        const SizedBox(width: 10),
-        Expanded(
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            if (label != null)
-              Text(label,
-                  style: const TextStyle(color: AppColors.muted, fontSize: 11)),
-            Text(value,
-                style: TextStyle(
-                    color: valueColor ?? AppColors.text,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600)),
-            if (sub != null)
-              Text(sub,
-                  style: const TextStyle(color: AppColors.muted, fontSize: 11)),
-          ]),
-        ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Text(label.toUpperCase(),
+              style: const TextStyle(
+                  color: AppColors.primary, fontSize: 11,
+                  fontWeight: FontWeight.bold, letterSpacing: 1.5)),
+          if (trailing != null) ...[const Spacer(), trailing],
+        ]),
+        const SizedBox(height: 16),
+        ...children,
       ]),
     );
   }
 
-  Widget _actionBtn(String label, IconData icon, Color color, VoidCallback onTap) {
+  Widget _labelValue(String label, String value) {
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text(label, style: const TextStyle(color: AppColors.muted, fontSize: 11)),
+      const SizedBox(height: 2),
+      Text(value, style: const TextStyle(color: AppColors.text, fontSize: 14, fontWeight: FontWeight.bold)),
+    ]);
+  }
+
+  Widget _webBtn(String label, Color color, VoidCallback? onTap, {bool fullWidth = false}) {
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        width: fullWidth ? double.infinity : null,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
         decoration: BoxDecoration(
-          color: color.withOpacity(0.12),
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: color.withOpacity(0.4)),
+          color: color.withOpacity(0.15),
+          borderRadius: BorderRadius.circular(9),
+          border: Border.all(color: color.withOpacity(0.3)),
         ),
-        child: Row(mainAxisSize: MainAxisSize.min, children: [
-          Icon(icon, color: color, size: 15),
-          const SizedBox(width: 4),
-          Text(label,
-              style: TextStyle(
-                  color: color, fontSize: 12, fontWeight: FontWeight.bold)),
-        ]),
+        child: Center(
+          child: Text(label,
+              textAlign: TextAlign.center,
+              style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.bold)),
+        ),
       ),
     );
   }
 
-  Widget _locationBtn(String label, IconData icon, Color color, VoidCallback? onTap,
-      {bool loading = false}) {
+  Widget _collectionModeBtn(String label, String mode) {
+    final selected = _collectionMode == mode;
     return GestureDetector(
-      onTap: onTap,
+      onTap: () => setState(() {
+        _collectionMode = mode;
+        _cashConfirmed = false;
+        _cashAmountCtrl.clear();
+        _transferImageUrl = null;
+        _transferImageFile = null;
+      }),
       child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 10),
+        padding: const EdgeInsets.symmetric(vertical: 12),
         decoration: BoxDecoration(
-          color: color.withOpacity(0.1),
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: color.withOpacity(0.4)),
+          color: selected ? AppColors.primary : AppColors.bg,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: selected ? AppColors.primary : AppColors.border,
+            width: selected ? 2 : 1,
+          ),
         ),
-        child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-          loading
-              ? SizedBox(
-                  width: 14,
-                  height: 14,
-                  child: CircularProgressIndicator(strokeWidth: 2, color: color))
-              : Icon(icon, color: color, size: 16),
-          const SizedBox(width: 6),
-          Text(label,
+        child: Center(
+          child: Text(label,
               style: TextStyle(
-                  color: color, fontSize: 13, fontWeight: FontWeight.bold)),
-        ]),
-      ),
-    );
-  }
-
-  Widget _paymentTypeCard(String label, String emoji, bool selected) {
-    return Container(
-      padding: const EdgeInsets.symmetric(vertical: 14),
-      decoration: BoxDecoration(
-        color: selected ? AppColors.primary.withOpacity(0.15) : AppColors.bg,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(
-          color: selected ? AppColors.primary : AppColors.border,
-          width: selected ? 1.5 : 1,
+                  color: selected ? Colors.black : AppColors.muted,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 14)),
         ),
       ),
-      child: Column(children: [
-        Text(emoji, style: const TextStyle(fontSize: 22)),
-        const SizedBox(height: 4),
-        Text(label,
-            style: TextStyle(
-                color: selected ? AppColors.primary : AppColors.muted,
-                fontWeight: FontWeight.bold)),
-      ]),
     );
   }
 }
