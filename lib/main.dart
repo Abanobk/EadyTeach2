@@ -49,7 +49,7 @@ class EasyTechApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Easy Tech',
+      title: 'easytecheg',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.darkTheme,
       initialRoute: '/splash',
@@ -98,50 +98,20 @@ class _SplashScreenState extends State<SplashScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppColors.bg,
+      backgroundColor: Colors.white,
       body: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Container(
-              width: 100,
-              height: 100,
-              decoration: BoxDecoration(
-                color: AppColors.primary,
-                borderRadius: BorderRadius.circular(24),
-              ),
-              child: const Center(
-                child: Text(
-                  'ET',
-                  style: TextStyle(
-                    color: Colors.black,
-                    fontSize: 36,
-                    fontWeight: FontWeight.w900,
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(height: 20),
-            const Text(
-              'EASY TECH',
-              style: TextStyle(
-                color: AppColors.primary,
-                fontSize: 14,
-                letterSpacing: 5,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-            const SizedBox(height: 6),
-            const Text(
-              'إدارة المنزل الذكي',
-              style: TextStyle(
-                color: AppColors.muted,
-                fontSize: 14,
-              ),
+            Image.asset(
+              'assets/images/splash_logo.png',
+              width: 240,
+              height: 240,
+              fit: BoxFit.contain,
             ),
             const SizedBox(height: 40),
             const CircularProgressIndicator(
-              color: AppColors.primary,
+              color: Color(0xFFF5A623),
               strokeWidth: 2,
             ),
           ],
