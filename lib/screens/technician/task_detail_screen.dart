@@ -11,7 +11,8 @@ import '../../services/api_service.dart';
 // ══════════════════════════════════════════════════════════════════════════════
 class TaskDetailScreen extends StatefulWidget {
   final Map<String, dynamic> task;
-  const TaskDetailScreen({super.key, required this.task});
+  final VoidCallback? onTaskUpdated;
+  const TaskDetailScreen({super.key, required this.task, this.onTaskUpdated});
 
   @override
   State<TaskDetailScreen> createState() => _TaskDetailScreenState();
