@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import '../../services/api_service.dart';
 import '../../utils/app_theme.dart';
 
@@ -59,8 +60,9 @@ class _AdminProductsScreenState extends State<AdminProductsScreen> {
     final priceCtrl = TextEditingController(text: product?['price']?.toString() ?? '');
     final stockCtrl = TextEditingController(text: product?['stock']?.toString() ?? '0');
     final descCtrl = TextEditingController(text: product?['description'] ?? '');
-    final imageCtrl = TextEditingController(text: product?['mainImageUrl'] ?? '');
+    String? mainImageUrl = product?['mainImageUrl'] as String?;
     bool isFeatured = product?['isFeatured'] == true;
+    bool uploadingImage = false;
     int? selectedCategoryId = product?['categoryId'] as int?;
 
     showModalBottomSheet(
@@ -97,9 +99,79 @@ class _AdminProductsScreenState extends State<AdminProductsScreen> {
                 const SizedBox(height: 6),
                 TextField(controller: stockCtrl, keyboardType: TextInputType.number, style: const TextStyle(color: AppColors.text), decoration: _inputDecoration(hint: '0')),
                 const SizedBox(height: 12),
-                const Text('رابط الصورة الرئيسية', style: TextStyle(color: AppColors.muted, fontSize: 13)),
-                const SizedBox(height: 6),
-                TextField(controller: imageCtrl, style: const TextStyle(color: AppColors.text), decoration: _inputDecoration(hint: 'https://...')),
+                const Text('صورة المنتج', style: TextStyle(color: AppColors.muted, fontSize: 13)),
+                const SizedBox(height: 8),
+                GestureDetector(
+                  onTap: uploadingImage ? null : () async {
+                    final picker = ImagePicker();
+                    final picked = await picker.pickImage(source: ImageSource.gallery, imageQuality: 80);
+                    if (picked == null) return;
+                    setModalState(() => uploadingImage = true);
+                    try {
+                      final url = await ApiService.uploadFile(picked.path);
+                      setModalState(() {
+                        mainImageUrl = url;
+                        uploadingImage = false;
+                      });
+                    } catch (e) {
+                      setModalState(() => uploadingImage = false);
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text('فشل رفع الصورة: $e'), backgroundColor: AppColors.error));
+                      }
+                    }
+                  },
+                  child: Container(
+                    width: double.infinity,
+                    height: 120,
+                    decoration: BoxDecoration(
+                      color: AppColors.bg,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: AppColors.border, width: 1.5),
+                    ),
+                    child: uploadingImage
+                        ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
+                        : mainImageUrl != null && mainImageUrl!.isNotEmpty
+                            ? Stack(
+                                children: [
+                                  ClipRRect(
+                                    borderRadius: BorderRadius.circular(12),
+                                    child: Image.network(mainImageUrl!, width: double.infinity, height: 120, fit: BoxFit.cover,
+                                        errorBuilder: (_, __, ___) => const Center(child: Icon(Icons.broken_image, color: AppColors.muted, size: 40))),
+                                  ),
+                                  Positioned(
+                                    top: 8, left: 8,
+                                    child: GestureDetector(
+                                      onTap: () => setModalState(() => mainImageUrl = null),
+                                      child: Container(
+                                        padding: const EdgeInsets.all(4),
+                                        decoration: BoxDecoration(color: Colors.red, borderRadius: BorderRadius.circular(20)),
+                                        child: const Icon(Icons.close, color: Colors.white, size: 16),
+                                      ),
+                                    ),
+                                  ),
+                                  Positioned(
+                                    bottom: 8, right: 8,
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                      decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(8)),
+                                      child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                                        Icon(Icons.edit, color: Colors.white, size: 14),
+                                        SizedBox(width: 4),
+                                        Text('تغيير', style: TextStyle(color: Colors.white, fontSize: 12)),
+                                      ]),
+                                    ),
+                                  ),
+                                ],
+                              )
+                            : const Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+                                Icon(Icons.add_photo_alternate_outlined, color: AppColors.primary, size: 40),
+                                SizedBox(height: 8),
+                                Text('اضغط لاختيار صورة من الجاليري',
+                                    style: TextStyle(color: AppColors.muted, fontSize: 13)),
+                              ]),
+                  ),
+                ),
                 const SizedBox(height: 12),
                 const Text('الوصف', style: TextStyle(color: AppColors.muted, fontSize: 13)),
                 const SizedBox(height: 6),
@@ -154,7 +226,7 @@ class _AdminProductsScreenState extends State<AdminProductsScreen> {
                           'price': priceCtrl.text.trim(),
                           if (nameArCtrl.text.isNotEmpty) 'nameAr': nameArCtrl.text.trim(),
                           if (descCtrl.text.isNotEmpty) 'description': descCtrl.text.trim(),
-                          if (imageCtrl.text.isNotEmpty) 'mainImageUrl': imageCtrl.text.trim(),
+                          if (mainImageUrl != null && mainImageUrl!.isNotEmpty) 'mainImageUrl': mainImageUrl,
                           'stock': int.tryParse(stockCtrl.text) ?? 0,
                           'isFeatured': isFeatured,
                           if (selectedCategoryId != null) 'categoryId': selectedCategoryId,

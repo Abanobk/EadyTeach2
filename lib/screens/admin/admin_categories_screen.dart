@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import '../../utils/app_theme.dart';
 import '../../services/api_service.dart';
 
@@ -42,7 +43,8 @@ class _AdminCategoriesScreenState extends State<AdminCategoriesScreen> {
     final nameCtrl = TextEditingController(text: category?['name'] ?? '');
     final nameArCtrl = TextEditingController(text: category?['nameAr'] ?? '');
     final descCtrl = TextEditingController(text: category?['description'] ?? '');
-    final imageCtrl = TextEditingController(text: category?['imageUrl'] ?? '');
+    String? imageUrl = category?['imageUrl'] as String?;
+    bool uploading = false;
 
     showModalBottomSheet(
       context: context,
@@ -62,17 +64,83 @@ class _AdminCategoriesScreenState extends State<AdminCategoriesScreen> {
                   IconButton(icon: const Icon(Icons.close, color: AppColors.muted), onPressed: () => Navigator.pop(ctx)),
                 ]),
                 const SizedBox(height: 16),
-                if (imageCtrl.text.isNotEmpty) ...[
-                  Center(
-                    child: ClipRRect(
+
+                // Image picker section
+                const Text('صورة الفئة', style: TextStyle(color: AppColors.muted, fontSize: 13)),
+                const SizedBox(height: 8),
+                GestureDetector(
+                  onTap: uploading ? null : () async {
+                    final picker = ImagePicker();
+                    final picked = await picker.pickImage(source: ImageSource.gallery, imageQuality: 80);
+                    if (picked == null) return;
+                    setModalState(() => uploading = true);
+                    try {
+                      final url = await ApiService.uploadFile(picked.path);
+                      setModalState(() {
+                        imageUrl = url;
+                        uploading = false;
+                      });
+                    } catch (e) {
+                      setModalState(() => uploading = false);
+                      if (ctx.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text('فشل رفع الصورة: $e'), backgroundColor: AppColors.error));
+                      }
+                    }
+                  },
+                  child: Container(
+                    width: double.infinity,
+                    height: 120,
+                    decoration: BoxDecoration(
+                      color: AppColors.bg,
                       borderRadius: BorderRadius.circular(12),
-                      child: Image.network(imageCtrl.text, height: 100, width: 100, fit: BoxFit.cover,
-                          errorBuilder: (_, __, ___) => Container(height: 100, width: 100, color: AppColors.border,
-                              child: const Icon(Icons.broken_image, color: AppColors.muted))),
+                      border: Border.all(color: AppColors.border, width: 1.5),
                     ),
+                    child: uploading
+                        ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
+                        : imageUrl != null && imageUrl!.isNotEmpty
+                            ? Stack(
+                                children: [
+                                  ClipRRect(
+                                    borderRadius: BorderRadius.circular(12),
+                                    child: Image.network(imageUrl!, width: double.infinity, height: 120, fit: BoxFit.cover,
+                                        errorBuilder: (_, __, ___) => const Center(child: Icon(Icons.broken_image, color: AppColors.muted, size: 40))),
+                                  ),
+                                  Positioned(
+                                    top: 8, left: 8,
+                                    child: GestureDetector(
+                                      onTap: () => setModalState(() => imageUrl = null),
+                                      child: Container(
+                                        padding: const EdgeInsets.all(4),
+                                        decoration: BoxDecoration(color: Colors.red, borderRadius: BorderRadius.circular(20)),
+                                        child: const Icon(Icons.close, color: Colors.white, size: 16),
+                                      ),
+                                    ),
+                                  ),
+                                  Positioned(
+                                    bottom: 8, right: 8,
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                      decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(8)),
+                                      child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                                        Icon(Icons.edit, color: Colors.white, size: 14),
+                                        SizedBox(width: 4),
+                                        Text('تغيير', style: TextStyle(color: Colors.white, fontSize: 12)),
+                                      ]),
+                                    ),
+                                  ),
+                                ],
+                              )
+                            : Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+                                const Icon(Icons.add_photo_alternate_outlined, color: AppColors.primary, size: 40),
+                                const SizedBox(height: 8),
+                                const Text('اضغط لاختيار صورة من الجاليري',
+                                    style: TextStyle(color: AppColors.muted, fontSize: 13)),
+                              ]),
                   ),
-                  const SizedBox(height: 12),
-                ],
+                ),
+                const SizedBox(height: 16),
+
                 const Text('اسم الفئة (عربي) *', style: TextStyle(color: AppColors.muted, fontSize: 13)),
                 const SizedBox(height: 6),
                 TextField(controller: nameArCtrl, style: const TextStyle(color: AppColors.text),
@@ -84,15 +152,6 @@ class _AdminCategoriesScreenState extends State<AdminCategoriesScreen> {
                 TextField(controller: nameCtrl, style: const TextStyle(color: AppColors.text),
                     decoration: _inputDec(hint: 'Smart Lock')),
                 const SizedBox(height: 12),
-                const Text('رابط الصورة / الأيقونة', style: TextStyle(color: AppColors.muted, fontSize: 13)),
-                const SizedBox(height: 6),
-                TextField(
-                  controller: imageCtrl,
-                  style: const TextStyle(color: AppColors.text),
-                  decoration: _inputDec(hint: 'https://...'),
-                  onChanged: (v) => setModalState(() {}),
-                ),
-                const SizedBox(height: 12),
                 const Text('الوصف (اختياري)', style: TextStyle(color: AppColors.muted, fontSize: 13)),
                 const SizedBox(height: 6),
                 TextField(controller: descCtrl, maxLines: 2, style: const TextStyle(color: AppColors.text),
@@ -101,7 +160,7 @@ class _AdminCategoriesScreenState extends State<AdminCategoriesScreen> {
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton(
-                    onPressed: () async {
+                    onPressed: uploading ? null : () async {
                       final nameAr = nameArCtrl.text.trim();
                       final nameEn = nameCtrl.text.trim();
                       if (nameAr.isEmpty && nameEn.isEmpty) {
@@ -115,7 +174,7 @@ class _AdminCategoriesScreenState extends State<AdminCategoriesScreen> {
                           'name': nameEn.isNotEmpty ? nameEn : nameAr,
                           if (nameAr.isNotEmpty) 'nameAr': nameAr,
                           if (descCtrl.text.trim().isNotEmpty) 'description': descCtrl.text.trim(),
-                          if (imageCtrl.text.trim().isNotEmpty) 'imageUrl': imageCtrl.text.trim(),
+                          if (imageUrl != null && imageUrl!.isNotEmpty) 'imageUrl': imageUrl,
                         };
                         if (isEdit) {
                           body['id'] = category!['id'];
@@ -193,7 +252,7 @@ class _AdminCategoriesScreenState extends State<AdminCategoriesScreen> {
                   itemCount: _categories.length,
                   itemBuilder: (_, i) {
                     final cat = _categories[i];
-                    final imageUrl = cat['imageUrl'] as String?;
+                    final imgUrl = cat['imageUrl'] as String?;
                     final name = cat['nameAr'] ?? cat['name'] ?? '';
 
                     return GestureDetector(
@@ -214,10 +273,10 @@ class _AdminCategoriesScreenState extends State<AdminCategoriesScreen> {
                                 color: AppColors.primary.withOpacity(0.12),
                                 borderRadius: BorderRadius.circular(16),
                               ),
-                              child: imageUrl != null && imageUrl.isNotEmpty
+                              child: imgUrl != null && imgUrl.isNotEmpty
                                   ? ClipRRect(
                                       borderRadius: BorderRadius.circular(16),
-                                      child: Image.network(imageUrl, fit: BoxFit.cover,
+                                      child: Image.network(imgUrl, fit: BoxFit.cover,
                                           errorBuilder: (_, __, ___) => const Icon(Icons.category, color: AppColors.primary, size: 36)),
                                     )
                                   : const Icon(Icons.category, color: AppColors.primary, size: 36),
@@ -237,7 +296,7 @@ class _AdminCategoriesScreenState extends State<AdminCategoriesScreen> {
                                 onTap: () => _showCategoryDialog(category: cat),
                                 child: Container(
                                   padding: const EdgeInsets.all(6),
-                                  decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.15), borderRadius: BorderRadius.circular(8)),
+                                  decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.12), borderRadius: BorderRadius.circular(8)),
                                   child: const Icon(Icons.edit_outlined, color: AppColors.primary, size: 16),
                                 ),
                               ),
