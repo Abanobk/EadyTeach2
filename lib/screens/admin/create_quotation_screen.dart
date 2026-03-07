@@ -116,9 +116,10 @@ class _CreateQuotationScreenState extends State<CreateQuotationScreen> {
   }
 
   void _addToCart(Map<String, dynamic> product) {
-    final colors = (product['colors'] as List?) ?? [];
+    // variants = ألوان ({color, colorHex, price}), types = أنواع ({name, price})
     final variants = (product['variants'] as List?) ?? [];
-    if (colors.isNotEmpty || variants.isNotEmpty) {
+    final types = (product['types'] as List?) ?? [];
+    if (variants.isNotEmpty || types.isNotEmpty) {
       setState(() {
         _variantModalProduct = product;
         _selectedColor = null;
@@ -134,9 +135,10 @@ class _CreateQuotationScreenState extends State<CreateQuotationScreen> {
     // Find price from selected color/variant
     double unitPrice = basePrice;
     if (color != null) {
-      final colors = (product['colors'] as List?) ?? [];
-      final colorData = colors.firstWhere(
-        (c) => c['name'] == color,
+      // variants لها حقل color وليس name
+      final variants = (product['variants'] as List?) ?? [];
+      final colorData = variants.firstWhere(
+        (c) => c['color'] == color,
         orElse: () => null,
       );
       if (colorData != null && colorData['price'] != null) {
@@ -145,8 +147,9 @@ class _CreateQuotationScreenState extends State<CreateQuotationScreen> {
       }
     }
     if (variant != null) {
-      final variants = (product['variants'] as List?) ?? [];
-      final variantData = variants.firstWhere(
+      // types لها حقل name
+      final types = (product['types'] as List?) ?? [];
+      final variantData = types.firstWhere(
         (v) => v['name'] == variant,
         orElse: () => null,
       );
@@ -167,11 +170,12 @@ class _CreateQuotationScreenState extends State<CreateQuotationScreen> {
       } else {
         _cartItems.add({
           'productId': product['id'],
-          'productName': product['name'],
-          'productDescription': product['description'] ?? '',
-          'productImage': product['images'] != null && (product['images'] as List).isNotEmpty
-              ? (product['images'] as List)[0]
-              : null,
+          'productName': product['nameAr'] ?? product['name'],
+          'productDescription': product['descriptionAr'] ?? product['description'] ?? '',
+          'productImage': product['mainImageUrl'] ??
+              (product['images'] != null && (product['images'] as List).isNotEmpty
+                  ? (product['images'] as List)[0]
+                  : null),
           'selectedColor': color,
           'selectedVariant': variant,
           'unitPrice': unitPrice,
@@ -380,7 +384,10 @@ class _CreateQuotationScreenState extends State<CreateQuotationScreen> {
                             final p = _filteredProducts[i];
                             final inCart = _cartItems.where((c) => c['productId'] == p['id']).fold(0, (sum, c) => sum + (c['qty'] as int));
                             final price = double.tryParse(p['price']?.toString() ?? '0') ?? 0;
-                            final hasVariants = ((p['colors'] as List?) ?? []).isNotEmpty || ((p['variants'] as List?) ?? []).isNotEmpty;
+                            // variants = ألوان, types = أنواع
+                            final variantsList = (p['variants'] as List?) ?? [];
+                            final typesList = (p['types'] as List?) ?? [];
+                            final hasVariants = variantsList.isNotEmpty || typesList.isNotEmpty;
                             return Padding(
                               padding: const EdgeInsets.only(bottom: 8),
                               child: Container(
@@ -395,24 +402,30 @@ class _CreateQuotationScreenState extends State<CreateQuotationScreen> {
                                   contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                                   leading: ClipRRect(
                                     borderRadius: BorderRadius.circular(8),
-                                    child: p['images'] != null && (p['images'] as List).isNotEmpty
-                                        ? Image.network(
-                                            (p['images'] as List)[0].toString(),
-                                            width: 52, height: 52, fit: BoxFit.cover,
-                                            errorBuilder: (_, __, ___) => Container(
+                                    child: () {
+                                      final imgUrl = p['mainImageUrl'] as String? ??
+                                          (p['images'] != null && (p['images'] as List).isNotEmpty
+                                              ? (p['images'] as List)[0].toString()
+                                              : null);
+                                      return imgUrl != null
+                                          ? Image.network(
+                                              imgUrl,
+                                              width: 52, height: 52, fit: BoxFit.cover,
+                                              errorBuilder: (_, __, ___) => Container(
+                                                width: 52, height: 52,
+                                                color: AppColors.border,
+                                                child: const Icon(Icons.image_not_supported, color: AppColors.muted, size: 20),
+                                              ),
+                                            )
+                                          : Container(
                                               width: 52, height: 52,
                                               color: AppColors.border,
-                                              child: const Icon(Icons.image_not_supported, color: AppColors.muted, size: 20),
-                                            ),
-                                          )
-                                        : Container(
-                                            width: 52, height: 52,
-                                            color: AppColors.border,
-                                            child: const Icon(Icons.inventory_2_outlined, color: AppColors.muted, size: 20),
-                                          ),
+                                              child: const Icon(Icons.inventory_2_outlined, color: AppColors.muted, size: 20),
+                                            );
+                                    }(),
                                   ),
                                   title: Text(
-                                    p['name'] ?? '',
+                                    p['nameAr'] ?? p['name'] ?? '',
                                     style: const TextStyle(color: AppColors.text, fontWeight: FontWeight.w600, fontSize: 13),
                                     maxLines: 2,
                                     overflow: TextOverflow.ellipsis,
@@ -420,14 +433,18 @@ class _CreateQuotationScreenState extends State<CreateQuotationScreen> {
                                   subtitle: Column(
                                     crossAxisAlignment: CrossAxisAlignment.start,
                                     children: [
-                                      Text(
-                                        '${price.toStringAsFixed(0)} ج.م',
-                                        style: const TextStyle(color: AppColors.primary, fontWeight: FontWeight.bold, fontSize: 13),
+                                      Row(
+                                        children: [
+                                          Text(
+                                            '${price.toStringAsFixed(0)} ج.م',
+                                            style: const TextStyle(color: AppColors.primary, fontWeight: FontWeight.bold, fontSize: 13),
+                                          ),
+                                          if (variantsList.isNotEmpty) ...[const SizedBox(width: 6), Container(padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1), decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.15), borderRadius: BorderRadius.circular(4)), child: Text('${variantsList.length} لون', style: const TextStyle(color: AppColors.primary, fontSize: 10, fontWeight: FontWeight.bold)))],
+                                          if (typesList.isNotEmpty) ...[const SizedBox(width: 4), Container(padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1), decoration: BoxDecoration(color: Colors.green.withOpacity(0.15), borderRadius: BorderRadius.circular(4)), child: Text('${typesList.length} نوع', style: const TextStyle(color: Colors.green, fontSize: 10, fontWeight: FontWeight.bold)))],
+                                        ],
                                       ),
                                       if (p['serialNumber'] != null && p['serialNumber'].toString().isNotEmpty)
                                         Text('S/N: ${p['serialNumber']}', style: const TextStyle(color: AppColors.muted, fontSize: 11)),
-                                      if (hasVariants)
-                                        const Text('له ألوان/أنواع', style: TextStyle(color: Colors.blue, fontSize: 11)),
                                     ],
                                   ),
                                   trailing: inCart > 0
@@ -445,11 +462,11 @@ class _CreateQuotationScreenState extends State<CreateQuotationScreen> {
                                           style: ElevatedButton.styleFrom(
                                             backgroundColor: AppColors.primary,
                                             foregroundColor: Colors.black,
-                                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                                             minimumSize: Size.zero,
                                             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                                           ),
-                                          child: const Text('إضافة', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                                          child: Text(hasVariants ? 'اختر المواصفات' : 'إضافة', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
                                         ),
                                   onTap: () => _addToCart(p),
                                 ),
@@ -719,8 +736,9 @@ class _CreateQuotationScreenState extends State<CreateQuotationScreen> {
 
   Widget _buildVariantModal() {
     final product = _variantModalProduct!;
-    final colors = (product['colors'] as List?) ?? [];
-    final variants = (product['variants'] as List?) ?? [];
+    // variants = ألوان ({color, colorHex, price}), types = أنواع ({name, price})
+    final variantsList = (product['variants'] as List?) ?? [];
+    final typesList = (product['types'] as List?) ?? [];
 
     return GestureDetector(
       onTap: () => setState(() => _variantModalProduct = null),
@@ -732,116 +750,147 @@ class _CreateQuotationScreenState extends State<CreateQuotationScreen> {
             child: Container(
               margin: const EdgeInsets.all(20),
               padding: const EdgeInsets.all(20),
+              constraints: const BoxConstraints(maxWidth: 480),
               decoration: BoxDecoration(
                 color: AppColors.card,
                 borderRadius: BorderRadius.circular(16),
                 border: Border.all(color: AppColors.border),
               ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Text(product['name'] ?? '', style: const TextStyle(color: AppColors.text, fontWeight: FontWeight.bold, fontSize: 16)),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(product['nameAr'] ?? product['name'] ?? '', style: const TextStyle(color: AppColors.text, fontWeight: FontWeight.bold, fontSize: 16)),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.close, color: AppColors.muted),
+                          onPressed: () => setState(() => _variantModalProduct = null),
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    // الألوان (variants)
+                    if (variantsList.isNotEmpty) ...[
+                      const Text('اختر اللون:', style: TextStyle(color: AppColors.muted, fontSize: 13, fontWeight: FontWeight.w600)),
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: variantsList.map((v) {
+                          final colorName = v['color'] as String? ?? '';
+                          final colorHex = v['colorHex'] as String? ?? '';
+                          final selected = _selectedColor == colorName;
+                          final price = double.tryParse(v['price']?.toString() ?? '0') ?? 0;
+                          Color? swatch;
+                          try {
+                            if (colorHex.isNotEmpty) {
+                              final hex = colorHex.replaceAll('#', '');
+                              swatch = Color(int.parse('FF$hex', radix: 16));
+                            }
+                          } catch (_) {}
+                          return GestureDetector(
+                            onTap: () => setState(() => _selectedColor = colorName),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                              decoration: BoxDecoration(
+                                color: selected ? AppColors.primary.withOpacity(0.2) : AppColors.bg,
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(color: selected ? AppColors.primary : AppColors.border, width: selected ? 2 : 1),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  if (swatch != null) ...[
+                                    Container(
+                                      width: 16, height: 16,
+                                      decoration: BoxDecoration(
+                                        color: swatch,
+                                        shape: BoxShape.circle,
+                                        border: Border.all(color: Colors.white.withOpacity(0.3)),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 6),
+                                  ],
+                                  Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(colorName, style: TextStyle(color: selected ? AppColors.primary : AppColors.text, fontWeight: FontWeight.w600, fontSize: 13)),
+                                      if (price > 0)
+                                        Text('${price.toStringAsFixed(0)} ج.م', style: const TextStyle(color: AppColors.muted, fontSize: 11)),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        }).toList(),
                       ),
-                      IconButton(
-                        icon: const Icon(Icons.close, color: AppColors.muted),
-                        onPressed: () => setState(() => _variantModalProduct = null),
-                        padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints(),
-                      ),
+                      const SizedBox(height: 12),
                     ],
-                  ),
-                  const SizedBox(height: 16),
-                  if (colors.isNotEmpty) ...[
-                    const Text('اختر اللون:', style: TextStyle(color: AppColors.muted, fontSize: 13, fontWeight: FontWeight.w600)),
-                    const SizedBox(height: 8),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: colors.map((c) {
-                        final name = c['name'] as String? ?? '';
-                        final selected = _selectedColor == name;
-                        final price = double.tryParse(c['price']?.toString() ?? '0') ?? 0;
-                        return GestureDetector(
-                          onTap: () => setState(() => _selectedColor = name),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                            decoration: BoxDecoration(
-                              color: selected ? AppColors.primary.withOpacity(0.2) : AppColors.bg,
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(color: selected ? AppColors.primary : AppColors.border, width: selected ? 2 : 1),
+                    // الأنواع (types)
+                    if (typesList.isNotEmpty) ...[
+                      const Text('اختر النوع:', style: TextStyle(color: AppColors.muted, fontSize: 13, fontWeight: FontWeight.w600)),
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: typesList.map((t) {
+                          final name = t['name'] as String? ?? '';
+                          final selected = _selectedVariant == name;
+                          final price = double.tryParse(t['price']?.toString() ?? '0') ?? 0;
+                          return GestureDetector(
+                            onTap: () => setState(() => _selectedVariant = name),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                              decoration: BoxDecoration(
+                                color: selected ? AppColors.primary.withOpacity(0.2) : AppColors.bg,
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(color: selected ? AppColors.primary : AppColors.border, width: selected ? 2 : 1),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(name, style: TextStyle(color: selected ? AppColors.primary : AppColors.text, fontWeight: FontWeight.w600, fontSize: 13)),
+                                  if (price > 0)
+                                    Text('${price.toStringAsFixed(0)} ج.م', style: const TextStyle(color: AppColors.muted, fontSize: 11)),
+                                ],
+                              ),
                             ),
-                            child: Column(
-                              children: [
-                                Text(name, style: TextStyle(color: selected ? AppColors.primary : AppColors.text, fontWeight: FontWeight.w600, fontSize: 13)),
-                                if (price > 0)
-                                  Text('${price.toStringAsFixed(0)} ج.م', style: const TextStyle(color: AppColors.muted, fontSize: 11)),
-                              ],
-                            ),
-                          ),
-                        );
-                      }).toList(),
-                    ),
-                    const SizedBox(height: 12),
-                  ],
-                  if (variants.isNotEmpty) ...[
-                    const Text('اختر النوع:', style: TextStyle(color: AppColors.muted, fontSize: 13, fontWeight: FontWeight.w600)),
-                    const SizedBox(height: 8),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: variants.map((v) {
-                        final name = v['name'] as String? ?? '';
-                        final selected = _selectedVariant == name;
-                        final price = double.tryParse(v['price']?.toString() ?? '0') ?? 0;
-                        return GestureDetector(
-                          onTap: () => setState(() => _selectedVariant = name),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                            decoration: BoxDecoration(
-                              color: selected ? AppColors.primary.withOpacity(0.2) : AppColors.bg,
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(color: selected ? AppColors.primary : AppColors.border, width: selected ? 2 : 1),
-                            ),
-                            child: Column(
-                              children: [
-                                Text(name, style: TextStyle(color: selected ? AppColors.primary : AppColors.text, fontWeight: FontWeight.w600, fontSize: 13)),
-                                if (price > 0)
-                                  Text('${price.toStringAsFixed(0)} ج.م', style: const TextStyle(color: AppColors.muted, fontSize: 11)),
-                              ],
-                            ),
-                          ),
-                        );
-                      }).toList(),
-                    ),
-                    const SizedBox(height: 12),
-                  ],
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton(
-                      onPressed: () {
-                        if (colors.isNotEmpty && _selectedColor == null) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('اختر لوناً أولاً'), backgroundColor: AppColors.error),
                           );
-                          return;
-                        }
-                        if (variants.isNotEmpty && _selectedVariant == null) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('اختر نوعاً أولاً'), backgroundColor: AppColors.error),
-                          );
-                          return;
-                        }
-                        _addToCartDirect(product, _selectedColor, _selectedVariant);
-                      },
-                      style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, foregroundColor: Colors.black),
-                      child: const Text('إضافة للسلة', style: TextStyle(fontWeight: FontWeight.bold)),
+                        }).toList(),
+                      ),
+                      const SizedBox(height: 12),
+                    ],
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        onPressed: () {
+                          if (variantsList.isNotEmpty && _selectedColor == null) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('اختر لوناً أولاً'), backgroundColor: AppColors.error),
+                            );
+                            return;
+                          }
+                          if (typesList.isNotEmpty && _selectedVariant == null) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('اختر نوعاً أولاً'), backgroundColor: AppColors.error),
+                            );
+                            return;
+                          }
+                          _addToCartDirect(product, _selectedColor, _selectedVariant);
+                        },
+                        style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, foregroundColor: Colors.black),
+                        child: const Text('إضافة للسلة', style: TextStyle(fontWeight: FontWeight.bold)),
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),
