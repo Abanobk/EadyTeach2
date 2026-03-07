@@ -22,6 +22,7 @@ class _CreateQuotationScreenState extends State<CreateQuotationScreen> {
 
   // Client info
   String _clientType = 'external'; // 'registered' | 'external'
+  String _clientSearch = '';
   List<dynamic> _clients = [];
   int? _selectedClientId;
   String? _selectedClientName;
@@ -658,26 +659,70 @@ class _CreateQuotationScreenState extends State<CreateQuotationScreen> {
                 ),
                 const SizedBox(height: 12),
                 if (_clientType == 'registered') ...[
-                  DropdownButtonFormField<int>(
-                    value: _selectedClientId,
-                    decoration: const InputDecoration(labelText: 'اختر العميل', prefixIcon: Icon(Icons.person_search, color: AppColors.muted)),
-                    dropdownColor: AppColors.card,
-                    style: const TextStyle(color: AppColors.text),
-                    items: _clients.map<DropdownMenuItem<int>>((c) {
-                      return DropdownMenuItem<int>(
-                        value: c['id'] as int,
-                        child: Text(c['name'] ?? c['email'] ?? '', style: const TextStyle(color: AppColors.text)),
-                      );
-                    }).toList(),
-                    onChanged: (v) {
-                      setState(() {
-                        _selectedClientId = v;
-                        final client = _clients.firstWhere((c) => c['id'] == v, orElse: () => null);
-                        _selectedClientName = client?['name'];
-                      });
-                    },
-                  ),
-                ] else ...[
+                  if (_clients.isEmpty)
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(color: AppColors.bg, borderRadius: BorderRadius.circular(8), border: Border.all(color: AppColors.border)),
+                      child: const Row(children: [SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary)), SizedBox(width: 10), Text('جاري تحميل العملاء...', style: TextStyle(color: AppColors.muted, fontSize: 13))]),
+                    )
+                  else ...[
+                    TextField(
+                      decoration: const InputDecoration(labelText: 'ابحث عن عميل', prefixIcon: Icon(Icons.search, color: AppColors.muted)),
+                      style: const TextStyle(color: AppColors.text),
+                      onChanged: (v) => setState(() => _clientSearch = v),
+                    ),
+                    const SizedBox(height: 8),
+                    Container(
+                      constraints: const BoxConstraints(maxHeight: 220),
+                      child: ListView(
+                        shrinkWrap: true,
+                        children: _clients.where((c) {
+                          if (_clientSearch.isEmpty) return true;
+                          final name = (c['name'] ?? '').toString().toLowerCase();
+                          final phone = (c['phone'] ?? '').toString();
+                          final email = (c['email'] ?? '').toString().toLowerCase();
+                          return name.contains(_clientSearch.toLowerCase()) || phone.contains(_clientSearch) || email.contains(_clientSearch.toLowerCase());
+                        }).map((c) {
+                          final id = c['id'] is int ? c['id'] as int : int.tryParse(c['id'].toString());
+                          final selected = _selectedClientId == id;
+                          return GestureDetector(
+                            onTap: () => setState(() {
+                              _selectedClientId = id;
+                              _selectedClientName = c['name'];
+                            }),
+                            child: Container(
+                              margin: const EdgeInsets.only(bottom: 6),
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                              decoration: BoxDecoration(
+                                color: selected ? AppColors.primary.withOpacity(0.15) : AppColors.bg,
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(color: selected ? AppColors.primary : AppColors.border, width: selected ? 1.5 : 1),
+                              ),
+                              child: Row(children: [
+                                CircleAvatar(
+                                  radius: 16,
+                                  backgroundColor: selected ? AppColors.primary : AppColors.border,
+                                  child: Text(
+                                    (c['name'] ?? '?').toString().isNotEmpty ? (c['name'] ?? '?').toString()[0].toUpperCase() : '?',
+                                    style: TextStyle(color: selected ? Colors.black : AppColors.muted, fontWeight: FontWeight.bold, fontSize: 13),
+                                  ),
+                                ),
+                                const SizedBox(width: 10),
+                                Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                  Text(c['name'] ?? c['email'] ?? '', style: TextStyle(color: selected ? AppColors.primary : AppColors.text, fontWeight: FontWeight.w600, fontSize: 14, decoration: TextDecoration.none)),
+                                  if (c['phone'] != null && c['phone'].toString().isNotEmpty)
+                                    Text(c['phone'], style: const TextStyle(color: AppColors.muted, fontSize: 12, decoration: TextDecoration.none)),
+                                ])),
+                                if (selected) const Icon(Icons.check_circle, color: AppColors.primary, size: 20),
+                              ]),
+                            ),
+                          );
+                        }).toList(),
+                      ),
+                    ),
+                  ],
+                ],
+                if (_clientType == 'external') ...[
                   TextField(
                     controller: _clientNameCtrl,
                     decoration: const InputDecoration(labelText: 'اسم العميل', prefixIcon: Icon(Icons.person_outline, color: AppColors.muted)),
