@@ -294,7 +294,8 @@ class _CreateQuotationScreenState extends State<CreateQuotationScreen> {
             body: _step == 1 ? _buildStep1() : _buildStep2(),
           ),
           // Variant Modal
-          if (_variantModalProduct != null) _buildVariantModal(),
+          if (_variantModalProduct != null)
+            Material(color: Colors.transparent, child: _buildVariantModal()),
         ],
       ),
     );
@@ -764,7 +765,7 @@ class _CreateQuotationScreenState extends State<CreateQuotationScreen> {
                     Row(
                       children: [
                         Expanded(
-                          child: Text(product['nameAr'] ?? product['name'] ?? '', style: const TextStyle(color: AppColors.text, fontWeight: FontWeight.bold, fontSize: 16)),
+                          child: Text(product['nameAr'] ?? product['name'] ?? '', style: const TextStyle(color: AppColors.text, fontWeight: FontWeight.bold, fontSize: 16, decoration: TextDecoration.none)),
                         ),
                         IconButton(
                           icon: const Icon(Icons.close, color: AppColors.muted),
@@ -777,7 +778,7 @@ class _CreateQuotationScreenState extends State<CreateQuotationScreen> {
                     const SizedBox(height: 16),
                     // الألوان (variants)
                     if (variantsList.isNotEmpty) ...[
-                      const Text('اختر اللون:', style: TextStyle(color: AppColors.muted, fontSize: 13, fontWeight: FontWeight.w600)),
+                      const Text('اختر اللون:', style: TextStyle(color: AppColors.muted, fontSize: 13, fontWeight: FontWeight.w600, decoration: TextDecoration.none)),
                       const SizedBox(height: 8),
                       Wrap(
                         spacing: 8,
@@ -820,9 +821,9 @@ class _CreateQuotationScreenState extends State<CreateQuotationScreen> {
                                   Column(
                                     crossAxisAlignment: CrossAxisAlignment.start,
                                     children: [
-                                      Text(colorName, style: TextStyle(color: selected ? AppColors.primary : AppColors.text, fontWeight: FontWeight.w600, fontSize: 13)),
+                                      Text(colorName, style: TextStyle(color: selected ? AppColors.primary : AppColors.text, fontWeight: FontWeight.w600, fontSize: 13, decoration: TextDecoration.none)),
                                       if (price > 0)
-                                        Text('${price.toStringAsFixed(0)} ج.م', style: const TextStyle(color: AppColors.muted, fontSize: 11)),
+                                        Text('${price.toStringAsFixed(0)} ج.م', style: const TextStyle(color: AppColors.muted, fontSize: 11, decoration: TextDecoration.none)),
                                     ],
                                   ),
                                 ],
@@ -835,7 +836,7 @@ class _CreateQuotationScreenState extends State<CreateQuotationScreen> {
                     ],
                     // الأنواع (types)
                     if (typesList.isNotEmpty) ...[
-                      const Text('اختر النوع:', style: TextStyle(color: AppColors.muted, fontSize: 13, fontWeight: FontWeight.w600)),
+                      const Text('اختر النوع:', style: TextStyle(color: AppColors.muted, fontSize: 13, fontWeight: FontWeight.w600, decoration: TextDecoration.none)),
                       const SizedBox(height: 8),
                       Wrap(
                         spacing: 8,
@@ -856,9 +857,9 @@ class _CreateQuotationScreenState extends State<CreateQuotationScreen> {
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  Text(name, style: TextStyle(color: selected ? AppColors.primary : AppColors.text, fontWeight: FontWeight.w600, fontSize: 13)),
+                                  Text(name, style: TextStyle(color: selected ? AppColors.primary : AppColors.text, fontWeight: FontWeight.w600, fontSize: 13, decoration: TextDecoration.none)),
                                   if (price > 0)
-                                    Text('${price.toStringAsFixed(0)} ج.م', style: const TextStyle(color: AppColors.muted, fontSize: 11)),
+                                    Text('${price.toStringAsFixed(0)} ج.م', style: const TextStyle(color: AppColors.muted, fontSize: 11, decoration: TextDecoration.none)),
                                 ],
                               ),
                             ),
