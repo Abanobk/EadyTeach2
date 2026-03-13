@@ -45,9 +45,13 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> {
       if (!mounted) return;
 
       if (result != null && result['success'] == true) {
-        // Refresh auth state
         final auth = context.read<AuthProvider>();
-        await auth.checkAuth();
+        final data = result['data'];
+        if (data != null && data is Map<String, dynamic> && data['user'] != null) {
+          auth.setUserFromLoginData(data);
+        } else {
+          await auth.checkAuth();
+        }
         if (!mounted) return;
         if (auth.isLoggedIn) {
           Navigator.pushReplacementNamed(context, '/admin');

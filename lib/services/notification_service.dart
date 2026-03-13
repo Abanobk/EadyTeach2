@@ -1,0 +1,349 @@
+import 'dart:convert';
+import 'package:flutter/material.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
+import 'api_service.dart';
+
+/// توجيه عند فتح الإشعار — يحتاج مفتاح الـ Navigator (يُعيَّن من main بعد بناء الشجرة)
+GlobalKey<NavigatorState>? _navigatorKey;
+RemoteMessage? _pendingOpenMessage;
+String? _pendingTapPayload;
+
+/// Background message handler - must be top-level function (outside any class)
+/// This runs in a separate isolate when the app is terminated/background
+@pragma('vm:entry-point')
+Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
+  // Note: Firebase is already initialized by the time this is called
+  debugPrint('[FCM Background] Received: ${message.notification?.title}');
+  // Badge will be updated when app opens via updateBadgeFromServer
+  // Note: Background badge update requires native plugin - handled via FCM data payload
+}
+
+class NotificationService {
+  static final NotificationService _instance = NotificationService._internal();
+  factory NotificationService() => _instance;
+  NotificationService._internal();
+
+  final FlutterLocalNotificationsPlugin _localNotifications =
+      FlutterLocalNotificationsPlugin();
+  final FirebaseMessaging _fcm = FirebaseMessaging.instance;
+
+  // NEW channel ID v2 - forces Android to recreate channel with correct sound/vibration settings
+  // Old channel 'easy_tech_high_importance' may have been created without sound in a previous install
+  static const String _channelId = 'easy_tech_v2';
+  static const String _channelName = 'Easy Tech - إشعارات مهمة';
+  static const String _channelDesc = 'إشعارات تطبيق Easy Tech للمهام والطلبات';
+
+  // Badge count tracker
+  static int _badgeCount = 0;
+
+  /// Initialize notifications - call once at app start
+  Future<void> initialize() async {
+    // 1. Request permission
+    final settings = await _fcm.requestPermission(
+      alert: true,
+      badge: true,
+      sound: true,
+      provisional: false,
+      criticalAlert: false,
+      announcement: false,
+      carPlay: false,
+    );
+    debugPrint('[FCM] Permission status: ${settings.authorizationStatus}');
+
+    // 2. Setup local notifications (for foreground display)
+    const AndroidInitializationSettings androidSettings =
+        AndroidInitializationSettings('@mipmap/ic_launcher');
+    const DarwinInitializationSettings iosSettings =
+        DarwinInitializationSettings(
+      requestAlertPermission: true,
+      requestBadgePermission: true,
+      requestSoundPermission: true,
+    );
+    const InitializationSettings initSettings = InitializationSettings(
+      android: androidSettings,
+      iOS: iosSettings,
+    );
+    await _localNotifications.initialize(
+      initSettings,
+      onDidReceiveNotificationResponse: _onNotificationTap,
+      onDidReceiveBackgroundNotificationResponse: _onBackgroundNotificationTap,
+    );
+
+    // 3. Create Android notification channel (HIGH importance = sound + heads-up)
+    const AndroidNotificationChannel channel = AndroidNotificationChannel(
+      _channelId,
+      _channelName,
+      description: _channelDesc,
+      importance: Importance.max,
+      playSound: true,
+      enableVibration: true,
+      enableLights: true,
+      ledColor: Color(0xFFF5A623),
+      showBadge: true,
+    );
+    await _localNotifications
+        .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>()
+        ?.createNotificationChannel(channel);
+
+    // 4. Handle foreground messages - show local notification with badge
+    FirebaseMessaging.onMessage.listen(_handleForegroundMessage);
+
+    // 5. Handle notification tap when app is in background/terminated
+    FirebaseMessaging.onMessageOpenedApp.listen(_handleMessageOpenedApp);
+
+    // 6. Handle initial message (app opened from terminated state via notification)
+    // نؤجل التوجيه حتى يُعيَّن navigatorKey ويُبنى الشجرة
+    final initialMessage = await _fcm.getInitialMessage();
+    if (initialMessage != null) {
+      debugPrint('[FCM] App opened from terminated state via notification');
+      _pendingOpenMessage = initialMessage;
+    }
+
+    // 7. Set foreground notification presentation options (iOS)
+    await _fcm.setForegroundNotificationPresentationOptions(
+      alert: true,
+      badge: true,
+      sound: true,
+    );
+
+    debugPrint('[NotificationService] Initialized successfully');
+  }
+
+  /// Get FCM token and save to server - with retry logic
+  Future<String?> getAndSaveFcmToken() async {
+    try {
+      // Wait a bit to ensure auth cookie is saved
+      await Future.delayed(const Duration(milliseconds: 500));
+
+      final token = await _fcm.getToken();
+      if (token != null) {
+        debugPrint('[FCM Token] Got token, saving to server...');
+        // Retry up to 3 times in case of network issues
+        for (int i = 0; i < 3; i++) {
+          try {
+            await ApiService().saveFcmToken(token);
+            debugPrint('[FCM Token] Saved successfully on attempt ${i + 1}');
+            break;
+          } catch (e) {
+            debugPrint('[FCM Token] Save attempt ${i + 1} failed: $e');
+            if (i < 2) await Future.delayed(Duration(seconds: (i + 1) * 2));
+          }
+        }
+      }
+
+      // Listen for token refresh
+      _fcm.onTokenRefresh.listen((newToken) {
+        debugPrint('[FCM Token] Token refreshed, saving new token...');
+        ApiService().saveFcmToken(newToken);
+      });
+
+      return token;
+    } catch (e) {
+      debugPrint('[FCM] Failed to get token: $e');
+      return null;
+    }
+  }
+
+  /// Update badge count from server (call when app becomes active)
+  Future<void> updateBadgeFromServer() async {
+    try {
+      final result = await ApiService.query('notifications.getUnreadCount');
+      final raw = result['data'];
+      int count = 0;
+      if (raw is int) {
+        count = raw;
+      } else if (raw is double) {
+        count = raw.toInt();
+      } else if (raw is Map) {
+        count = (raw['count'] is int) ? raw['count'] : int.tryParse('${raw['count']}') ?? 0;
+      }
+      await setBadgeCount(count);
+    } catch (e) {
+      debugPrint('[Badge] Failed to get unread count: $e');
+    }
+  }
+
+  /// Set badge count - stored locally, shown in notification number field
+  /// Note: Android badge count is shown via notification's 'number' field
+  /// True app icon badge requires launcher support (Samsung, Xiaomi, etc.)
+  static Future<void> setBadgeCount(int count) async {
+    try {
+      _badgeCount = count < 0 ? 0 : count;
+      debugPrint('[Badge] Badge count set to $_badgeCount');
+    } catch (e) {
+      debugPrint('[Badge] Failed to set badge: $e');
+    }
+  }
+
+  /// Increment badge count
+  static Future<void> incrementBadge() async {
+    await setBadgeCount(_badgeCount + 1);
+  }
+
+  /// Clear badge count
+  static Future<void> clearBadge() async {
+    await setBadgeCount(0);
+  }
+
+  /// Show local notification for foreground messages
+  Future<void> _handleForegroundMessage(RemoteMessage message) async {
+    debugPrint('[FCM Foreground] ${message.notification?.title}');
+    final notification = message.notification;
+    if (notification == null) return;
+
+    // Increment badge count
+    await incrementBadge();
+
+    final notifId = message.hashCode.abs() % 2147483647;
+
+    await _localNotifications.show(
+      notifId,
+      notification.title ?? 'Easy Tech',
+      notification.body ?? '',
+      NotificationDetails(
+        android: AndroidNotificationDetails(
+          _channelId,
+          _channelName,
+          channelDescription: _channelDesc,
+          importance: Importance.max,
+          priority: Priority.high,
+          playSound: true,
+          enableVibration: true,
+          enableLights: true,
+          ledColor: const Color(0xFFF5A623),
+          icon: '@mipmap/ic_launcher',
+          fullScreenIntent: true,
+          number: _badgeCount,
+          styleInformation: BigTextStyleInformation(
+            notification.body ?? '',
+            htmlFormatBigText: false,
+            contentTitle: notification.title,
+          ),
+        ),
+        iOS: DarwinNotificationDetails(
+          presentAlert: true,
+          presentBadge: true,
+          presentSound: true,
+          badgeNumber: _badgeCount,
+        ),
+      ),
+      payload: jsonEncode(message.data),
+    );
+  }
+
+  void setNavigatorKey(GlobalKey<NavigatorState> key) {
+    _navigatorKey = key;
+  }
+
+  /// يُستدعى بعد أول إطار لمعالجة إشعار فتح التطبيق (من حالة مغلقة)
+  void processPendingNotification() {
+    if (_pendingOpenMessage != null) {
+      final msg = _pendingOpenMessage!;
+      _pendingOpenMessage = null;
+      final data = msg.data;
+      // تأخير التوجيه حتى تنتهي شاشة البداية وتصل للشاشة الرئيسية
+      Future.delayed(const Duration(milliseconds: 2500), () {
+        _navigateToNotificationData(data);
+      });
+    }
+    processTapPayload();
+  }
+
+  /// معالجة ضغط إشعار (مثلاً عند فتح التطبيق من الخلفية بالضغط على إشعار محلي)
+  void processTapPayload() {
+    final payload = _pendingTapPayload;
+    _pendingTapPayload = null;
+    if (payload == null || payload.isEmpty) return;
+    try {
+      final data = jsonDecode(payload) as Map<String, dynamic>?;
+      _navigateToNotificationData(data);
+    } catch (_) {}
+  }
+
+  void _handleMessageOpenedApp(RemoteMessage message) {
+    debugPrint('[FCM Opened] ${message.notification?.title}');
+    clearBadge();
+    _navigateToNotificationData(message.data);
+  }
+
+  void _onNotificationTap(NotificationResponse response) {
+    debugPrint('[Notification Tap] payload: ${response.payload}');
+    clearBadge();
+    if (response.payload != null && response.payload!.isNotEmpty) {
+      try {
+        final data = jsonDecode(response.payload!) as Map<String, dynamic>?;
+        _navigateToNotificationData(data);
+      } catch (_) {}
+    }
+  }
+
+  static int? _parseId(dynamic v) {
+    if (v == null) return null;
+    if (v is int) return v;
+    if (v is double) return v.toInt();
+    return int.tryParse(v.toString());
+  }
+
+  /// التوجيه للصفحة المناسبة حسب بيانات الإشعار
+  void _navigateToNotificationData(Map<String, dynamic>? data) {
+    if (data == null || data.isEmpty) return;
+
+    final type = (data['type'] as String? ?? data['screen'] as String? ?? data['refType'] as String? ?? data['notification_type'] as String?)?.toLowerCase().trim();
+    final refId = _parseId(data['refId']) ?? _parseId(data['id']) ?? _parseId(data['taskId']) ?? _parseId(data['task_id']);
+
+    void doNavigate() {
+      final nav = _navigatorKey?.currentState;
+      if (nav == null) return;
+
+      switch (type) {
+        case 'task':
+          if (refId != null) nav.pushNamed('/task-detail', arguments: refId);
+          break;
+        case 'quotation':
+        case 'quote':
+          if (refId != null) nav.pushNamed('/quotation-detail', arguments: refId);
+          break;
+        case 'order':
+          nav.pushNamed('/admin');
+          break;
+        case 'accounting':
+          nav.pushNamed('/admin', arguments: 'accounting');
+          break;
+        case 'message':
+        case 'inbox':
+          nav.pushNamed('/admin', arguments: 'inbox');
+          break;
+        case 'crm':
+          nav.pushNamed('/admin', arguments: 'crm');
+          break;
+        default:
+          if (refId != null) {
+            nav.pushNamed('/task-detail', arguments: refId);
+          }
+          break;
+      }
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_navigatorKey?.currentState != null) {
+        doNavigate();
+        return;
+      }
+      Future.delayed(const Duration(milliseconds: 400), () {
+        if (_navigatorKey?.currentState != null) doNavigate();
+      });
+    });
+  }
+}
+
+/// Background notification tap handler - must be top-level
+@pragma('vm:entry-point')
+void _onBackgroundNotificationTap(NotificationResponse response) {
+  debugPrint('[Background Notification Tap] payload: ${response.payload}');
+  _pendingTapPayload = response.payload;
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    NotificationService().processTapPayload();
+  });
+}

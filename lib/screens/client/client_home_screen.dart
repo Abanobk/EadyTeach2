@@ -189,6 +189,10 @@ class _ClientHomeScreenState extends State<ClientHomeScreen> {
           snap: true,
           backgroundColor: AppColors.card,
           elevation: 1,
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back_ios_new, color: AppColors.primary, size: 20),
+            onPressed: () => Navigator.pushReplacementNamed(context, '/role-select'),
+          ),
           title: Row(
             children: [
               Container(
@@ -288,9 +292,10 @@ class _ClientHomeScreenState extends State<ClientHomeScreen> {
                   final cat = _categories[i];
                   final color = _catColors[i % _catColors.length];
                   final isSelected = _selectedCategory == cat['id'].toString();
+                  final catImgRaw = cat['imageUrl'] as String?;
                   return _CategoryCard(
                     name: cat['nameAr'] ?? cat['name'] ?? '',
-                    imageUrl: cat['imageUrl'] as String?,
+                    imageUrl: (catImgRaw != null && catImgRaw.isNotEmpty) ? ApiService.proxyImageUrl(catImgRaw) : null,
                     color: color,
                     isSelected: isSelected,
                     onTap: () => setState(() {
@@ -666,7 +671,10 @@ class _ProductCard extends StatelessWidget {
         double.tryParse(product['price']?.toString() ?? '0') ?? 0;
     final originalPrice =
         double.tryParse(product['originalPrice']?.toString() ?? '0') ?? 0;
-    final image = product['mainImageUrl'] as String?;
+    final rawImage = product['mainImageUrl'] as String?;
+    final image = (rawImage != null && rawImage.isNotEmpty)
+        ? ApiService.proxyImageUrl(rawImage)
+        : null;
     final name = product['nameAr'] ?? product['name'] ?? '';
     final hasDiscount = originalPrice > price && originalPrice > 0;
     final stock = product['stock'] as int? ?? 0;

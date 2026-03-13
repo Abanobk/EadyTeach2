@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../../providers/auth_provider.dart';
 import '../../services/api_service.dart';
 import '../../utils/app_theme.dart';
+import '../../modules/survey/screens/survey_entry_screen.dart';
 import 'admin_orders_screen.dart';
 import 'admin_customers_screen.dart';
 import 'admin_products_screen.dart';
@@ -15,6 +16,7 @@ import 'admin_inbox_screen.dart';
 import 'admin_permissions_screen.dart';
 import 'admin_reports_screen.dart';
 import 'admin_quotations_screen.dart';
+import 'admin_accounting_screen.dart';
 
 class AdminHomeScreen extends StatefulWidget {
   const AdminHomeScreen({super.key});
@@ -26,11 +28,24 @@ class _AdminHomeScreenState extends State<AdminHomeScreen> {
   int _selectedIndex = 0;
   Map<String, dynamic>? _stats;
   bool _loadingStats = true;
+  int _unreadNotifs = 0;
 
   @override
   void initState() {
     super.initState();
     _loadStats();
+    _loadUnreadCount();
+  }
+
+  Future<void> _loadUnreadCount() async {
+    try {
+      final res = await ApiService.query('notifications.getUnreadCount');
+      final raw = res['data'];
+      int count = 0;
+      if (raw is int) count = raw;
+      else if (raw is Map) count = (raw['count'] is int) ? raw['count'] : int.tryParse('${raw['count']}') ?? 0;
+      if (mounted) setState(() => _unreadNotifs = count);
+    } catch (_) {}
   }
 
   Future<void> _loadStats() async {
@@ -49,6 +64,17 @@ class _AdminHomeScreenState extends State<AdminHomeScreen> {
   @override
   Widget build(BuildContext context) {
     final auth = context.watch<AuthProvider>();
+    if (!auth.canAccessAdmin) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (context.mounted) {
+          Navigator.of(context).pushReplacementNamed('/role-select');
+        }
+      });
+      return const Scaffold(
+        backgroundColor: AppColors.bg,
+        body: Center(child: CircularProgressIndicator(color: AppColors.primary)),
+      );
+    }
     final screens = [
       _buildDashboard(auth),
       const AdminOrdersScreen(),
@@ -110,21 +136,47 @@ class _AdminHomeScreenState extends State<AdminHomeScreen> {
                 padding: const EdgeInsets.symmetric(vertical: 8),
                 children: [
                   _drawerSection('الأنظمة الرئيسية'),
-                  _drawerItem(context, Icons.dashboard_outlined, 'لوحة التحكم', () { Navigator.pop(context); setState(() => _selectedIndex = 0); }),
-                  _drawerItem(context, Icons.receipt_long_outlined, 'إدارة الطلبات', () { Navigator.pop(context); setState(() => _selectedIndex = 1); }),
-                  _drawerItem(context, Icons.people_outline, 'إدارة العملاء', () { Navigator.pop(context); setState(() => _selectedIndex = 2); }),
-                  _drawerItem(context, Icons.inventory_2_outlined, 'إدارة المنتجات', () { Navigator.pop(context); setState(() => _selectedIndex = 3); }),
-                  _drawerItem(context, Icons.build_outlined, 'إدارة المهام', () { Navigator.pop(context); setState(() => _selectedIndex = 4); }),
+                  if (auth.hasPermission('dashboard.view'))
+                    _drawerItem(context, Icons.dashboard_outlined, 'لوحة التحكم', () { Navigator.pop(context); setState(() => _selectedIndex = 0); }),
+                  if (auth.hasPermission('orders.view'))
+                    _drawerItem(context, Icons.receipt_long_outlined, 'إدارة الطلبات', () { Navigator.pop(context); setState(() => _selectedIndex = 1); }),
+                  if (auth.hasPermission('customers.view'))
+                    _drawerItem(context, Icons.people_outline, 'إدارة العملاء', () { Navigator.pop(context); setState(() => _selectedIndex = 2); }),
+                  if (auth.hasPermission('products.view'))
+                    _drawerItem(context, Icons.inventory_2_outlined, 'إدارة المنتجات', () { Navigator.pop(context); setState(() => _selectedIndex = 3); }),
+                  if (auth.hasPermission('tasks.view'))
+                    _drawerItem(context, Icons.build_outlined, 'إدارة المهام', () { Navigator.pop(context); setState(() => _selectedIndex = 4); }),
                   const Divider(color: AppColors.border, height: 24),
                   _drawerSection('أنظمة متقدمة'),
-                  _drawerItem(context, Icons.request_quote_outlined, 'عروض الأسعار', () { Navigator.pop(context); _navigate(context, const AdminQuotationsScreen()); }, color: Colors.amber),
-                  _drawerItem(context, Icons.category_outlined, 'التصنيفات', () { Navigator.pop(context); _navigate(context, const AdminCategoriesScreen()); }, color: Colors.teal),
-                  _drawerItem(context, Icons.people_alt_outlined, 'نظام CRM', () { Navigator.pop(context); _navigate(context, const AdminCrmScreen()); }, color: Colors.indigo),
-                  _drawerItem(context, Icons.inbox_outlined, 'صندوق الرسائل', () { Navigator.pop(context); _navigate(context, const AdminInboxScreen()); }, color: Colors.blue),
-                  _drawerItem(context, Icons.notifications_outlined, 'الإشعارات', () { Navigator.pop(context); _navigate(context, const AdminNotificationsScreen()); }, color: Colors.orange),
-                  _drawerItem(context, Icons.calendar_month_outlined, 'السكرتارية', () { Navigator.pop(context); _navigate(context, const AdminSecretaryScreen()); }, color: Colors.pink),
-                  _drawerItem(context, Icons.bar_chart_outlined, 'التقارير', () { Navigator.pop(context); _navigate(context, const AdminReportsScreen()); }, color: Colors.green),
-                  _drawerItem(context, Icons.admin_panel_settings_outlined, 'الصلاحيات', () { Navigator.pop(context); _navigate(context, const AdminPermissionsScreen()); }, color: Colors.red),
+                  if (auth.hasPermission('quotations.view'))
+                    _drawerItem(context, Icons.request_quote_outlined, 'عروض الأسعار', () { Navigator.pop(context); _navigate(context, const AdminQuotationsScreen()); }, color: Colors.amber),
+                  if (auth.hasPermission('categories.view'))
+                    _drawerItem(context, Icons.category_outlined, 'التصنيفات', () { Navigator.pop(context); _navigate(context, const AdminCategoriesScreen()); }, color: Colors.teal),
+                  if (auth.hasPermission('accounting.view'))
+                    _drawerItem(context, Icons.account_balance_wallet_outlined, 'الحسابات والعهد', () { Navigator.pop(context); _navigate(context, const AdminAccountingScreen()); }, color: Colors.deepOrange),
+                  if (auth.hasPermission('crm.view'))
+                    _drawerItem(context, Icons.people_alt_outlined, 'نظام CRM', () { Navigator.pop(context); _navigate(context, const AdminCrmScreen()); }, color: Colors.indigo),
+                  if (auth.hasPermission('inbox.view'))
+                    _drawerItem(context, Icons.inbox_outlined, 'صندوق الرسائل', () { Navigator.pop(context); _navigate(context, const AdminInboxScreen()); }, color: Colors.blue),
+                  if (auth.hasPermission('notifications.view'))
+                    _drawerItem(context, Icons.notifications_outlined, 'الإشعارات', () { Navigator.pop(context); _navigate(context, const AdminNotificationsScreen()); }, color: Colors.orange),
+                  if (auth.hasPermission('secretary.view'))
+                    _drawerItem(context, Icons.calendar_month_outlined, 'السكرتارية', () { Navigator.pop(context); _navigate(context, const AdminSecretaryScreen()); }, color: Colors.pink),
+                  if (auth.hasPermission('reports.view'))
+                    _drawerItem(context, Icons.bar_chart_outlined, 'التقارير', () { Navigator.pop(context); _navigate(context, const AdminReportsScreen()); }, color: Colors.green),
+                  if (auth.hasPermission('surveys.view'))
+                    _drawerItem(
+                      context,
+                      Icons.home_work_outlined,
+                      'Smart Survey (المعاينة الذكية)',
+                      () {
+                        Navigator.pop(context);
+                        _navigate(context, const SurveyEntryScreen());
+                      },
+                      color: Colors.cyan,
+                    ),
+                  if (auth.hasPermission('permissions.view'))
+                    _drawerItem(context, Icons.admin_panel_settings_outlined, 'الصلاحيات', () { Navigator.pop(context); _navigate(context, const AdminPermissionsScreen()); }, color: Colors.red),
                   const Divider(color: AppColors.border, height: 24),
                   _drawerItem(context, Icons.logout, 'تسجيل الخروج', () async {
                     Navigator.pop(context);
@@ -173,6 +225,25 @@ class _AdminHomeScreenState extends State<AdminHomeScreen> {
           leading: Builder(builder: (ctx) => IconButton(icon: const Icon(Icons.menu, color: AppColors.text), onPressed: () => Scaffold.of(ctx).openDrawer())),
           title: const Text('لوحة التحكم', style: TextStyle(color: AppColors.text, fontWeight: FontWeight.bold)),
           actions: [
+            Stack(
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.notifications_outlined, color: AppColors.primary),
+                  onPressed: () {
+                    Navigator.push(context, MaterialPageRoute(builder: (_) => const Directionality(textDirection: TextDirection.rtl, child: AdminNotificationsScreen()))).then((_) => _loadUnreadCount());
+                  },
+                ),
+                if (_unreadNotifs > 0)
+                  Positioned(
+                    right: 6, top: 6,
+                    child: Container(
+                      padding: const EdgeInsets.all(4),
+                      decoration: const BoxDecoration(color: Colors.red, shape: BoxShape.circle),
+                      child: Text('$_unreadNotifs', style: const TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold)),
+                    ),
+                  ),
+              ],
+            ),
             Container(
               margin: const EdgeInsets.only(left: 12, top: 8, bottom: 8),
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
@@ -209,24 +280,40 @@ class _AdminHomeScreenState extends State<AdminHomeScreen> {
                 const SizedBox(height: 24),
                 const Text('الأنظمة المتقدمة', style: TextStyle(color: AppColors.text, fontWeight: FontWeight.bold, fontSize: 18)),
                 const SizedBox(height: 12),
-                GridView.count(
-                  crossAxisCount: 3,
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  crossAxisSpacing: 10,
-                  mainAxisSpacing: 10,
-                  childAspectRatio: 0.9,
-                  children: [
-                    _SystemCard(icon: Icons.category_outlined, label: 'التصنيفات', color: Colors.teal, onTap: () => _navigate(context, const AdminCategoriesScreen())),
-                    _SystemCard(icon: Icons.people_alt_outlined, label: 'CRM', color: Colors.indigo, onTap: () => _navigate(context, const AdminCrmScreen())),
-                    _SystemCard(icon: Icons.inbox_outlined, label: 'الرسائل', color: Colors.blue, onTap: () => _navigate(context, const AdminInboxScreen())),
-                    _SystemCard(icon: Icons.notifications_outlined, label: 'الإشعارات', color: Colors.orange, onTap: () => _navigate(context, const AdminNotificationsScreen())),
-                    _SystemCard(icon: Icons.calendar_month_outlined, label: 'السكرتارية', color: Colors.pink, onTap: () => _navigate(context, const AdminSecretaryScreen())),
-                    _SystemCard(icon: Icons.bar_chart_outlined, label: 'التقارير', color: Colors.green, onTap: () => _navigate(context, const AdminReportsScreen())),
-                    _SystemCard(icon: Icons.admin_panel_settings_outlined, label: 'الصلاحيات', color: Colors.red, onTap: () => _navigate(context, const AdminPermissionsScreen())),
-                    _SystemCard(icon: Icons.request_quote_outlined, label: 'عروض الأسعار', color: Colors.amber, onTap: () => _navigate(context, const AdminQuotationsScreen())),
-                  ],
-                ),
+                Builder(builder: (_) {
+                  final p = auth;
+                  final cards = <Widget>[
+                    if (p.hasPermission('categories.view'))
+                      _SystemCard(icon: Icons.category_outlined, label: 'التصنيفات', color: Colors.teal, onTap: () => _navigate(context, const AdminCategoriesScreen())),
+                    if (p.hasPermission('accounting.view'))
+                      _SystemCard(icon: Icons.account_balance_wallet_outlined, label: 'الحسابات', color: Colors.deepOrange, onTap: () => _navigate(context, const AdminAccountingScreen())),
+                    if (p.hasPermission('crm.view'))
+                      _SystemCard(icon: Icons.people_alt_outlined, label: 'CRM', color: Colors.indigo, onTap: () => _navigate(context, const AdminCrmScreen())),
+                    if (p.hasPermission('inbox.view'))
+                      _SystemCard(icon: Icons.inbox_outlined, label: 'الرسائل', color: Colors.blue, onTap: () => _navigate(context, const AdminInboxScreen())),
+                    if (p.hasPermission('notifications.view'))
+                      _SystemCard(icon: Icons.notifications_outlined, label: 'الإشعارات', color: Colors.orange, onTap: () => _navigate(context, const AdminNotificationsScreen())),
+                    if (p.hasPermission('secretary.view'))
+                      _SystemCard(icon: Icons.calendar_month_outlined, label: 'السكرتارية', color: Colors.pink, onTap: () => _navigate(context, const AdminSecretaryScreen())),
+                    if (p.hasPermission('reports.view'))
+                      _SystemCard(icon: Icons.bar_chart_outlined, label: 'التقارير', color: Colors.green, onTap: () => _navigate(context, const AdminReportsScreen())),
+                    if (p.hasPermission('permissions.view'))
+                      _SystemCard(icon: Icons.admin_panel_settings_outlined, label: 'الصلاحيات', color: Colors.red, onTap: () => _navigate(context, const AdminPermissionsScreen())),
+                    if (p.hasPermission('quotations.view'))
+                      _SystemCard(icon: Icons.request_quote_outlined, label: 'عروض الأسعار', color: Colors.amber, onTap: () => _navigate(context, const AdminQuotationsScreen())),
+                    if (p.hasPermission('surveys.view'))
+                      _SystemCard(icon: Icons.home_work_outlined, label: 'Smart Survey', color: Colors.cyan, onTap: () => _navigate(context, const SurveyEntryScreen())),
+                  ];
+                  return GridView.count(
+                    crossAxisCount: 3,
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    crossAxisSpacing: 10,
+                    mainAxisSpacing: 10,
+                    childAspectRatio: 0.9,
+                    children: cards,
+                  );
+                }),
                 const SizedBox(height: 24),
                 const Text('الإجراءات السريعة', style: TextStyle(color: AppColors.text, fontWeight: FontWeight.bold, fontSize: 18)),
                 const SizedBox(height: 12),

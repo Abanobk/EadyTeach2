@@ -14,6 +14,7 @@ class _AdminTasksScreenState extends State<AdminTasksScreen> {
   List<dynamic> _customers = [];
   List<dynamic> _technicians = [];
   bool _loading = true;
+  String _filter = 'current'; // current, today, overdue, completed
 
   @override
   void initState() {
@@ -27,7 +28,7 @@ class _AdminTasksScreenState extends State<AdminTasksScreen> {
       final results = await Future.wait([
         ApiService.query('tasks.list'),
         ApiService.query('clients.list'),
-        ApiService.query('clients.technicians'),
+        ApiService.query('clients.staff'),
       ]);
       setState(() {
         _tasks = results[0]['data'] ?? [];
@@ -37,6 +38,61 @@ class _AdminTasksScreenState extends State<AdminTasksScreen> {
       });
     } catch (e) {
       setState(() => _loading = false);
+    }
+  }
+
+  String _todayStr() {
+    final now = DateTime.now();
+    return '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+  }
+
+  List<dynamic> get _filteredTasks {
+    final today = _todayStr();
+    switch (_filter) {
+      case 'current':
+        return _tasks.where((t) {
+          final s = t['status'];
+          return s != 'completed' && s != 'cancelled';
+        }).toList();
+      case 'today':
+        return _tasks.where((t) {
+          final s = t['status'];
+          if (s == 'cancelled') return false;
+          final sched = t['scheduledAt']?.toString() ?? '';
+          return sched.startsWith(today);
+        }).toList();
+      case 'overdue':
+        return _tasks.where((t) {
+          final s = t['status'];
+          if (s == 'completed' || s == 'cancelled') return false;
+          final sched = t['scheduledAt']?.toString() ?? '';
+          if (sched.isEmpty) return false;
+          try {
+            final schedDate = DateTime.parse(sched);
+            final todayDate = DateTime.now();
+            return DateTime(schedDate.year, schedDate.month, schedDate.day)
+                .isBefore(DateTime(todayDate.year, todayDate.month, todayDate.day));
+          } catch (_) {
+            return false;
+          }
+        }).toList();
+      case 'completed':
+        return _tasks.where((t) => t['status'] == 'completed').toList();
+      default:
+        return _tasks;
+    }
+  }
+
+  String _formatTime12h(String isoStr) {
+    try {
+      final dt = DateTime.parse(isoStr);
+      final h = dt.hour;
+      final m = dt.minute.toString().padLeft(2, '0');
+      final period = h >= 12 ? 'م' : 'ص';
+      final h12 = h == 0 ? 12 : (h > 12 ? h - 12 : h);
+      return '$h12:$m $period';
+    } catch (_) {
+      return isoStr.length > 16 ? isoStr.substring(11, 16) : isoStr;
     }
   }
 
@@ -90,8 +146,39 @@ class _AdminTasksScreenState extends State<AdminTasksScreen> {
     );
   }
 
+  Widget _buildFilterChip(String label, String value, IconData icon, {Color? activeColor}) {
+    final isSelected = _filter == value;
+    final color = activeColor ?? AppColors.primary;
+    return GestureDetector(
+      onTap: () => setState(() => _filter = value),
+      child: Container(
+        margin: const EdgeInsets.only(left: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: isSelected ? color.withOpacity(0.15) : AppColors.card,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: isSelected ? color : AppColors.border),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 15, color: isSelected ? color : AppColors.muted),
+            const SizedBox(width: 6),
+            Text(label, style: TextStyle(
+              color: isSelected ? color : AppColors.text,
+              fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+              fontSize: 13,
+            )),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final filteredTasks = _filteredTasks;
+
     return Scaffold(
       backgroundColor: AppColors.bg,
       appBar: AppBar(
@@ -111,26 +198,43 @@ class _AdminTasksScreenState extends State<AdminTasksScreen> {
         icon: const Icon(Icons.add),
         label: const Text('مهمة جديدة', style: TextStyle(fontWeight: FontWeight.bold)),
       ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
-          : _tasks.isEmpty
-              ? Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.assignment_outlined, size: 64, color: AppColors.muted.withOpacity(0.4)),
-                      const SizedBox(height: 16),
-                      const Text('لا توجد مهام', style: TextStyle(color: AppColors.muted, fontSize: 16)),
-                      const SizedBox(height: 8),
-                      const Text('اضغط + لإضافة مهمة جديدة', style: TextStyle(color: AppColors.muted, fontSize: 13)),
-                    ],
-                  ),
-                )
-              : ListView.builder(
+      body: Column(
+        children: [
+          SizedBox(
+            height: 56,
+            child: Directionality(
+              textDirection: TextDirection.rtl,
+              child: ListView(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                children: [
+                  _buildFilterChip('المهام الحالية', 'current', Icons.pending_actions),
+                  _buildFilterChip('مهام اليوم', 'today', Icons.today, activeColor: Colors.blue),
+                  _buildFilterChip('مهام متأخرة', 'overdue', Icons.warning_amber_rounded, activeColor: Colors.red),
+                  _buildFilterChip('مهام منفذة', 'completed', Icons.check_circle_outline, activeColor: Colors.green),
+                ],
+              ),
+            ),
+          ),
+          Expanded(
+            child: _loading
+                ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
+                : filteredTasks.isEmpty
+                    ? Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.assignment_outlined, size: 64, color: AppColors.muted.withOpacity(0.4)),
+                            const SizedBox(height: 16),
+                            const Text('لا توجد مهام', style: TextStyle(color: AppColors.muted, fontSize: 16)),
+                          ],
+                        ),
+                      )
+                    : ListView.builder(
                   padding: const EdgeInsets.all(16),
-                  itemCount: _tasks.length,
+                  itemCount: filteredTasks.length,
                   itemBuilder: (ctx, i) {
-                    final task = _tasks[i];
+                    final task = filteredTasks[i];
                     final status = task['status'] ?? 'pending';
                     return Container(
                       margin: const EdgeInsets.only(bottom: 12),
@@ -177,7 +281,7 @@ class _AdminTasksScreenState extends State<AdminTasksScreen> {
                                     const Icon(Icons.access_time, size: 13, color: AppColors.primary),
                                     const SizedBox(width: 4),
                                     Text(
-                                      'وصول: ${task['estimatedArrivalAt'].toString().substring(11, 16)}',
+                                      'وصول: ${_formatTime12h(task['estimatedArrivalAt'].toString())}',
                                       style: const TextStyle(color: AppColors.primary, fontSize: 12),
                                     ),
                                   ]),
@@ -202,8 +306,61 @@ class _AdminTasksScreenState extends State<AdminTasksScreen> {
                               ),
                             ),
                           ),
+                          // Progress bar
+                          Builder(builder: (_) {
+                            final items = task['items'] is List ? task['items'] as List : [];
+                            final overallProgress = task['overallProgress'] is int
+                                ? task['overallProgress'] as int
+                                : (items.isEmpty
+                                    ? 0
+                                    : () {
+                                        int total = 0;
+                                        for (final item in items) {
+                                          if (item is Map) {
+                                            total += (item['progress'] as int?) ?? ((item['isCompleted'] == true) ? 100 : 0);
+                                          }
+                                        }
+                                        return items.isNotEmpty ? (total / items.length).round() : 0;
+                                      }());
+                            if (items.isEmpty) return const SizedBox.shrink();
+                            final pColor = overallProgress >= 100
+                                ? Colors.green
+                                : overallProgress >= 75
+                                    ? Colors.blue
+                                    : overallProgress >= 50
+                                        ? Colors.orange
+                                        : overallProgress >= 25
+                                            ? const Color(0xFFF57C00)
+                                            : Colors.red.shade400;
+                            final completedCount = items.where((i) => i is Map && ((i['progress'] as int?) ?? 0) >= 100).length;
+                            return Padding(
+                              padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+                              child: Column(
+                                children: [
+                                  Row(children: [
+                                    Text('الإنجاز', style: TextStyle(color: AppColors.muted, fontSize: 11)),
+                                    const Spacer(),
+                                    Text(
+                                      '$completedCount/${items.length} بنود  •  $overallProgress%',
+                                      style: TextStyle(color: pColor, fontSize: 11, fontWeight: FontWeight.bold),
+                                    ),
+                                  ]),
+                                  const SizedBox(height: 4),
+                                  ClipRRect(
+                                    borderRadius: BorderRadius.circular(4),
+                                    child: LinearProgressIndicator(
+                                      value: overallProgress / 100.0,
+                                      backgroundColor: AppColors.border,
+                                      valueColor: AlwaysStoppedAnimation<Color>(pColor),
+                                      minHeight: 6,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            );
+                          }),
                           Padding(
-                            padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+                            padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
                             child: Row(
                               mainAxisAlignment: MainAxisAlignment.end,
                               children: [
@@ -248,6 +405,9 @@ class _AdminTasksScreenState extends State<AdminTasksScreen> {
                     );
                   },
                 ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -391,7 +551,7 @@ class _TaskWizardState extends State<_TaskWizard> {
           'items': items,
         };
         if (_customerId != null) updateInput['customerId'] = _customerId;
-        if (_technicianId != null) updateInput['technicianId'] = _technicianId;
+        if (_technicianId != null) updateInput['technicianId'] = _technicianId!; // same user id as auth.me for technician
         if (_scheduledDate != null) updateInput['scheduledAt'] = _scheduledDate!.toIso8601String();
         if (estimatedArrivalIso != null) updateInput['estimatedArrivalAt'] = estimatedArrivalIso;
         if (_amountCtrl.text.isNotEmpty) updateInput['amount'] = _amountCtrl.text.trim();
@@ -406,7 +566,7 @@ class _TaskWizardState extends State<_TaskWizard> {
           'items': items,
         };
         if (_customerId != null) createInput['customerId'] = _customerId;
-        if (_technicianId != null) createInput['technicianId'] = _technicianId;
+        if (_technicianId != null) createInput['technicianId'] = _technicianId!; // staff id = technician user id (matches auth.me)
         if (_scheduledDate != null) createInput['scheduledAt'] = _scheduledDate!.toIso8601String();
         if (estimatedArrivalIso != null) createInput['estimatedArrivalAt'] = estimatedArrivalIso;
         if (_amountCtrl.text.isNotEmpty) createInput['amount'] = _amountCtrl.text.trim();
@@ -417,6 +577,13 @@ class _TaskWizardState extends State<_TaskWizard> {
       widget.onSaved();
     } catch (e) {
       setState(() => _saving = false);
+      // طباعة الخطأ في الـ log لتسهيل تتبعه أثناء التطوير
+      // سيتم عرضه في التيرمنال مع الوسم التالي:
+      // TASK_SAVE_ERROR: <message>
+      // لا يؤثر على المستخدم النهائي في النسخة النهائية.
+      // تجاهل أي تحذير lints هنا لأن هذا مخصص للديبج فقط.
+      // ignore: avoid_print
+      print('TASK_SAVE_ERROR: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(

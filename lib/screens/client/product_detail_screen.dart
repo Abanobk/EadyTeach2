@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../providers/cart_provider.dart';
+import '../../services/api_service.dart';
 import '../../utils/app_theme.dart';
 
 class ProductDetailScreen extends StatefulWidget {
@@ -35,10 +36,12 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
     final imgs = widget.product['images'];
     final main = widget.product['mainImageUrl'] as String?;
     List<String> result = [];
-    if (main != null && main.isNotEmpty) result.add(main);
+    if (main != null && main.isNotEmpty) result.add(ApiService.proxyImageUrl(main));
     if (imgs is List) {
       for (var img in imgs) {
-        if (img is String && img.isNotEmpty && img != main) result.add(img);
+        if (img is String && img.isNotEmpty && img != main) {
+          result.add(ApiService.proxyImageUrl(img));
+        }
       }
     }
     return result;

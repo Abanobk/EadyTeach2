@@ -1,0 +1,992 @@
+<?php
+/**
+ * Tasks, TaskNotes, TechnicianLocation, Quotations, Orders procedures
+ */
+
+// ─── tasks.list ────────────────────────────────────────────────
+function tasks_list($ctx) {
+    global $db;
+    $rows = $db->query('
+        SELECT t.*,
+               c.name AS customer_name, c.phone AS customer_phone, c.address AS customer_address, c.location AS customer_location,
+               tech.name AS technician_name
+        FROM tasks t
+        LEFT JOIN users c ON c.id = t.customer_id
+        LEFT JOIN users tech ON tech.id = t.technician_id
+        ORDER BY t.created_at DESC
+    ')->fetchAll();
+
+    _ensureItemProgressColumns();
+    $result = [];
+    foreach ($rows as $r) {
+        $items = $db->prepare('SELECT id, description, is_completed, progress FROM task_items WHERE task_id = ?');
+        $items->execute([$r['id']]);
+        $itemRows = $items->fetchAll();
+
+        $totalProgress = 0;
+        $itemCount = count($itemRows);
+        foreach ($itemRows as $i) {
+            $totalProgress += (int)($i['progress'] ?? ($i['is_completed'] ? 100 : 0));
+        }
+        $overallProgress = $itemCount > 0 ? round($totalProgress / $itemCount) : 0;
+
+        $result[] = [
+            'id' => (int)$r['id'],
+            'title' => $r['title'] ?? '',
+            'status' => $r['status'] ?? 'pending',
+            'customerId' => $r['customer_id'] ? (int)$r['customer_id'] : null,
+            'technicianId' => $r['technician_id'] ? (int)$r['technician_id'] : null,
+            'customerName' => $r['customer_name'] ?? null,
+            'customerPhone' => $r['customer_phone'] ?? null,
+            'customerAddress' => $r['customer_address'] ?? null,
+            'customerLocation' => $r['customer_location'] ?? null,
+            'technicianName' => $r['technician_name'] ?? null,
+            'technician' => $r['technician_id'] ? ['id' => (int)$r['technician_id'], 'name' => $r['technician_name'] ?? ''] : null,
+            'scheduledAt' => $r['scheduled_at'] ?? null,
+            'estimatedArrivalAt' => $r['estimated_arrival_at'] ?? null,
+            'amount' => $r['amount'] ?? null,
+            'collectionType' => $r['collection_type'] ?? null,
+            'notes' => $r['notes'] ?? null,
+            'createdAt' => $r['created_at'] ?? null,
+            'overallProgress' => (int)$overallProgress,
+            'items' => array_map(function($i) {
+                return [
+                    'id' => (int)$i['id'],
+                    'description' => $i['description'],
+                    'isCompleted' => (bool)$i['is_completed'],
+                    'progress' => (int)($i['progress'] ?? ($i['is_completed'] ? 100 : 0)),
+                ];
+            }, $itemRows),
+        ];
+    }
+    return $result;
+}
+
+// ─── tasks.getMyTasks (technician) ─────────────────────────────
+function tasks_getMyTasks($ctx) {
+    global $db;
+    if (!$ctx['userId']) throw new Exception('UNAUTHORIZED');
+    $stmt = $db->prepare('
+        SELECT t.*,
+               c.name AS customer_name, c.phone AS customer_phone, c.address AS customer_address, c.location AS customer_location,
+               tech.name AS technician_name
+        FROM tasks t
+        LEFT JOIN users c ON c.id = t.customer_id
+        LEFT JOIN users tech ON tech.id = t.technician_id
+        WHERE t.technician_id = ?
+        ORDER BY t.created_at DESC
+    ');
+    $stmt->execute([$ctx['userId']]);
+    $rows = $stmt->fetchAll();
+
+    _ensureItemProgressColumns();
+    $result = [];
+    foreach ($rows as $r) {
+        $items = $db->prepare('SELECT id, description, is_completed, progress FROM task_items WHERE task_id = ?');
+        $items->execute([$r['id']]);
+        $result[] = _formatTaskRow($r, $items->fetchAll());
+    }
+    return $result;
+}
+
+// ─── tasks.myTasks (client) ────────────────────────────────────
+function tasks_myTasks($ctx) {
+    global $db;
+    if (!$ctx['userId']) throw new Exception('UNAUTHORIZED');
+    $stmt = $db->prepare('
+        SELECT t.*, tech.name AS technician_name
+        FROM tasks t
+        LEFT JOIN users tech ON tech.id = t.technician_id
+        WHERE t.customer_id = ?
+        ORDER BY t.created_at DESC
+    ');
+    $stmt->execute([$ctx['userId']]);
+    $rows = $stmt->fetchAll();
+
+    $result = [];
+    foreach ($rows as $r) {
+        $result[] = [
+            'id' => (int)$r['id'],
+            'title' => $r['title'] ?? '',
+            'status' => $r['status'] ?? 'pending',
+            'scheduledAt' => $r['scheduled_at'] ? strtotime($r['scheduled_at']) * 1000 : null,
+            'technicianName' => $r['technician_name'] ?? null,
+            'notes' => $r['notes'] ?? null,
+            'amount' => $r['amount'] ?? null,
+        ];
+    }
+    return $result;
+}
+
+// ─── tasks.byId ────────────────────────────────────────────────
+function tasks_byId($input, $ctx) {
+    global $db;
+    $id = (int)($input['id'] ?? 0);
+    $stmt = $db->prepare('
+        SELECT t.*,
+               c.name AS customer_name, c.phone AS customer_phone, c.address AS customer_address, c.location AS customer_location,
+               tech.name AS technician_name
+        FROM tasks t
+        LEFT JOIN users c ON c.id = t.customer_id
+        LEFT JOIN users tech ON tech.id = t.technician_id
+        WHERE t.id = ?
+    ');
+    $stmt->execute([$id]);
+    $r = $stmt->fetch();
+    if (!$r) throw new Exception('Task not found');
+
+    return [
+        'id' => (int)$r['id'],
+        'title' => $r['title'] ?? '',
+        'status' => $r['status'] ?? 'pending',
+        'scheduledAt' => $r['scheduled_at'] ?? null,
+        'estimatedArrivalAt' => $r['estimated_arrival_at'] ?? null,
+        'amount' => $r['amount'] ?? null,
+        'collectionType' => $r['collection_type'] ?? null,
+        'notes' => $r['notes'] ?? null,
+        'createdAt' => $r['created_at'] ?? null,
+        'customerName' => $r['customer_name'] ?? null,
+        'customerPhone' => $r['customer_phone'] ?? null,
+        'customerAddress' => $r['customer_address'] ?? null,
+        'customerLocation' => $r['customer_location'] ?? null,
+        'technicianName' => $r['technician_name'] ?? null,
+        'customer' => $r['customer_id'] ? [
+            'name' => $r['customer_name'] ?? '',
+            'phone' => $r['customer_phone'] ?? '',
+            'address' => $r['customer_address'] ?? '',
+            'location' => $r['customer_location'] ?? '',
+        ] : null,
+        'technician' => $r['technician_id'] ? ['name' => $r['technician_name'] ?? ''] : null,
+    ];
+}
+
+// ─── tasks.items ───────────────────────────────────────────────
+function _ensureItemProgressColumns() {
+    global $db;
+    $cols = [];
+    try {
+        foreach ($db->query("SHOW COLUMNS FROM task_items")->fetchAll() as $c) $cols[] = $c['Field'];
+    } catch (\Exception $e) { return; }
+    if (!in_array('progress', $cols)) {
+        $db->exec("ALTER TABLE task_items ADD COLUMN progress INT DEFAULT 0 AFTER is_completed");
+    }
+    if (!in_array('progress_note', $cols)) {
+        $db->exec("ALTER TABLE task_items ADD COLUMN progress_note TEXT DEFAULT NULL AFTER progress");
+    }
+}
+
+function _formatTaskItem($r) {
+    return [
+        'id' => (int)$r['id'],
+        'description' => $r['description'] ?? '',
+        'isCompleted' => (bool)($r['is_completed'] ?? false),
+        'progress' => (int)($r['progress'] ?? ($r['is_completed'] ? 100 : 0)),
+        'progressNote' => $r['progress_note'] ?? '',
+        'mediaUrls' => isset($r['media_urls']) && $r['media_urls'] ? json_decode($r['media_urls'], true) : [],
+        'mediaTypes' => isset($r['media_types']) && $r['media_types'] ? json_decode($r['media_types'], true) : [],
+    ];
+}
+
+function tasks_items($input, $ctx) {
+    global $db;
+    _ensureItemProgressColumns();
+    $taskId = (int)($input['taskId'] ?? 0);
+    $stmt = $db->prepare('SELECT * FROM task_items WHERE task_id = ? ORDER BY id ASC');
+    $stmt->execute([$taskId]);
+    return array_map('_formatTaskItem', $stmt->fetchAll());
+}
+
+// ─── tasks.create ──────────────────────────────────────────────
+function tasks_create($input, $ctx) {
+    global $db;
+    $title = $input['title'] ?? '';
+    $customerId = isset($input['customerId']) ? (int)$input['customerId'] : null;
+    $technicianId = isset($input['technicianId']) ? (int)$input['technicianId'] : null;
+    $scheduledAt = $input['scheduledAt'] ?? null;
+    $estimatedArrivalAt = $input['estimatedArrivalAt'] ?? null;
+    $amount = $input['amount'] ?? null;
+    $collectionType = $input['collectionType'] ?? null;
+    $notes = $input['notes'] ?? null;
+    $status = $technicianId ? 'assigned' : 'pending';
+
+    $stmt = $db->prepare('INSERT INTO tasks (title, customer_id, technician_id, status, collection_type, amount, notes, scheduled_at, estimated_arrival_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
+    $stmt->execute([$title, $customerId, $technicianId, $status, $collectionType, $amount, $notes, $scheduledAt, $estimatedArrivalAt]);
+    $taskId = (int)$db->lastInsertId();
+
+    $items = $input['items'] ?? [];
+    if (!empty($items)) {
+        $ins = $db->prepare('INSERT INTO task_items (task_id, description, is_completed) VALUES (?, ?, 0)');
+        foreach ($items as $desc) {
+            $ins->execute([$taskId, $desc]);
+        }
+    }
+
+    // Notify technician about new task assignment
+    if ($technicianId) {
+        try {
+            _notifyUser($technicianId, 'مهمة جديدة', "تم تعيينك لمهمة: {$title}", 'task', $taskId, 'task');
+        } catch (\Exception $e) { /* ignore notification errors */ }
+    }
+
+    return ['id' => $taskId];
+}
+
+// ─── tasks.update ──────────────────────────────────────────────
+function tasks_update($input, $ctx) {
+    global $db;
+    $id = (int)($input['id'] ?? 0);
+    if (!$id) throw new Exception('Task ID required');
+
+    // Check previous status before updating
+    $prevStmt = $db->prepare('SELECT status, technician_id, amount, title FROM tasks WHERE id = ?');
+    $prevStmt->execute([$id]);
+    $prevTask = $prevStmt->fetch();
+    $prevStatus = $prevTask ? $prevTask['status'] : null;
+
+    $fields = [];
+    $params = [];
+    $map = [
+        'title' => 'title', 'status' => 'status', 'collectionType' => 'collection_type',
+        'amount' => 'amount', 'notes' => 'notes', 'scheduledAt' => 'scheduled_at',
+        'estimatedArrivalAt' => 'estimated_arrival_at', 'customerId' => 'customer_id',
+        'technicianId' => 'technician_id',
+    ];
+    foreach ($map as $jsKey => $dbCol) {
+        if (array_key_exists($jsKey, $input)) {
+            $fields[] = "$dbCol = ?";
+            $params[] = $input[$jsKey];
+        }
+    }
+    if (!empty($fields)) {
+        $params[] = $id;
+        $db->prepare('UPDATE tasks SET ' . implode(', ', $fields) . ' WHERE id = ?')->execute($params);
+    }
+
+    if (isset($input['items']) && is_array($input['items'])) {
+        $db->prepare('DELETE FROM task_items WHERE task_id = ?')->execute([$id]);
+        $ins = $db->prepare('INSERT INTO task_items (task_id, description, is_completed) VALUES (?, ?, 0)');
+        foreach ($input['items'] as $desc) {
+            $ins->execute([$id, $desc]);
+        }
+    }
+
+    // ── Notification triggers ──
+    try {
+        $taskTitle = $input['title'] ?? $prevTask['title'] ?? 'مهمة';
+        $newStatus = $input['status'] ?? null;
+
+        // Notify technician if newly assigned
+        if (isset($input['technicianId']) && $input['technicianId'] && $input['technicianId'] != ($prevTask['technician_id'] ?? 0)) {
+            _notifyUser((int)$input['technicianId'], 'مهمة جديدة', "تم تعيينك لمهمة: {$taskTitle}", 'task', $id, 'task');
+        }
+
+        // Notify admins on status change
+        if ($newStatus && $newStatus !== $prevStatus) {
+            $statusLabels = ['in_progress' => 'جاري العمل', 'completed' => 'مكتملة', 'cancelled' => 'ملغاة', 'pending' => 'معلقة'];
+            $label = $statusLabels[$newStatus] ?? $newStatus;
+            _notifyAdminsAndSupervisors("تحديث مهمة", "المهمة \"{$taskTitle}\" أصبحت: {$label}", 'task', $id, 'task');
+        }
+    } catch (\Exception $e) { /* ignore */ }
+
+    // Auto-create accounting transaction on task completion
+    if ($newStatus === 'completed' && $prevStatus !== 'completed' && $prevTask) {
+        $techId = (int)($input['technicianId'] ?? $prevTask['technician_id'] ?? 0);
+        $amount = (float)($input['amount'] ?? $prevTask['amount'] ?? 0);
+        $taskTitle = $input['title'] ?? $prevTask['title'] ?? '';
+
+        if ($techId > 0 && $amount > 0) {
+            require_once __DIR__ . '/accounting_procedures.php';
+            _ensureAccountingSchema();
+
+            // Check if collection already exists for this task
+            $chk = $db->prepare("SELECT id FROM acc_transactions WHERE task_id = ? AND type = 'collection'");
+            $chk->execute([$id]);
+            if (!$chk->fetch()) {
+                $db->prepare("INSERT INTO acc_transactions
+                    (type, technician_id, task_id, amount, description, status, approved_by, approved_at, created_by)
+                    VALUES ('collection', ?, ?, ?, ?, 'approved', ?, NOW(), ?)")
+                   ->execute([
+                       $techId, $id, $amount,
+                       "تحصيل من مهمة: $taskTitle",
+                       $ctx['userId'], $ctx['userId']
+                   ]);
+            }
+        }
+    }
+
+    return ['success' => true];
+}
+
+// ─── tasks.updateItem ──────────────────────────────────────────
+function tasks_updateItem($input, $ctx) {
+    global $db;
+    _ensureItemProgressColumns();
+    $id = (int)($input['id'] ?? 0);
+
+    $fields = [];
+    $params = [];
+
+    if (array_key_exists('isCompleted', $input)) {
+        $fields[] = 'is_completed = ?';
+        $params[] = $input['isCompleted'] ? 1 : 0;
+    }
+    if (array_key_exists('progress', $input)) {
+        $progress = max(0, min(100, (int)$input['progress']));
+        $fields[] = 'progress = ?';
+        $params[] = $progress;
+        if ($progress >= 100) {
+            $fields[] = 'is_completed = 1';
+        }
+    }
+    if (array_key_exists('progressNote', $input)) {
+        $fields[] = 'progress_note = ?';
+        $params[] = $input['progressNote'];
+    }
+
+    if (!empty($fields)) {
+        $params[] = $id;
+        $db->prepare('UPDATE task_items SET ' . implode(', ', $fields) . ' WHERE id = ?')->execute($params);
+    }
+
+    // Notify admins about progress update
+    try {
+        $progress = isset($input['progress']) ? (int)$input['progress'] : null;
+        if ($progress !== null) {
+            $itemStmt = $db->prepare("SELECT ti.description, ti.task_id, t.title as task_title
+                FROM task_items ti JOIN tasks t ON t.id = ti.task_id WHERE ti.id = ?");
+            $itemStmt->execute([$id]);
+            $item = $itemStmt->fetch();
+            if ($item) {
+                $techName = '';
+                if ($ctx['userId']) {
+                    $uStmt = $db->prepare("SELECT name FROM users WHERE id = ?");
+                    $uStmt->execute([$ctx['userId']]);
+                    $techName = $uStmt->fetchColumn() ?: '';
+                }
+                $msg = $techName ? "{$techName} أنجز {$progress}%" : "تم إنجاز {$progress}%";
+                $msg .= " من: {$item['description']}";
+                if ($input['progressNote'] ?? '') {
+                    $msg .= " - {$input['progressNote']}";
+                }
+                _notifyAdminsAndSupervisors("تقدم في مهمة", $msg, 'task', (int)$item['task_id'], 'task');
+            }
+        }
+    } catch (\Exception $e) { /* ignore */ }
+
+    return ['success' => true];
+}
+
+// ─── tasks.addItemMedia ────────────────────────────────────────
+function tasks_addItemMedia($input, $ctx) {
+    global $db;
+    $itemId = (int)($input['itemId'] ?? 0);
+    $url = $input['url'] ?? '';
+    $type = $input['type'] ?? 'image';
+
+    $stmt = $db->prepare('SELECT media_urls, media_types FROM task_items WHERE id = ?');
+    $stmt->execute([$itemId]);
+    $row = $stmt->fetch();
+    if (!$row) throw new Exception('Item not found');
+
+    $urls = $row['media_urls'] ? json_decode($row['media_urls'], true) : [];
+    $types = $row['media_types'] ? json_decode($row['media_types'], true) : [];
+    $urls[] = $url;
+    $types[] = $type;
+
+    $db->prepare('UPDATE task_items SET media_urls = ?, media_types = ? WHERE id = ?')
+       ->execute([json_encode($urls), json_encode($types), $itemId]);
+    return ['success' => true];
+}
+
+// ─── tasks.removeItemMedia ─────────────────────────────────────
+function tasks_removeItemMedia($input, $ctx) {
+    global $db;
+    $itemId = (int)($input['itemId'] ?? 0);
+    $index = (int)($input['index'] ?? -1);
+
+    $stmt = $db->prepare('SELECT media_urls, media_types FROM task_items WHERE id = ?');
+    $stmt->execute([$itemId]);
+    $row = $stmt->fetch();
+    if (!$row) throw new Exception('Item not found');
+
+    $urls = $row['media_urls'] ? json_decode($row['media_urls'], true) : [];
+    $types = $row['media_types'] ? json_decode($row['media_types'], true) : [];
+
+    if ($index >= 0 && $index < count($urls)) {
+        array_splice($urls, $index, 1);
+        array_splice($types, $index, 1);
+    }
+
+    $db->prepare('UPDATE task_items SET media_urls = ?, media_types = ? WHERE id = ?')
+       ->execute([json_encode($urls), json_encode($types), $itemId]);
+    return ['success' => true];
+}
+
+// ─── clients.list (for task creation dropdown) ─────────────────
+function clients_list($ctx) {
+    global $db;
+    $rows = $db->query("SELECT id, name, phone FROM users WHERE role = 'user' ORDER BY name ASC")->fetchAll();
+    $result = [];
+    foreach ($rows as $r) {
+        $result[] = ['id' => (int)$r['id'], 'name' => $r['name'] ?? '', 'phone' => $r['phone'] ?? ''];
+    }
+    return $result;
+}
+
+// ─── clients.staff (technicians dropdown) ──────────────────────
+function clients_staff($ctx) {
+    global $db;
+    $rows = $db->query("SELECT id, name FROM users WHERE role IN ('technician','admin') ORDER BY name ASC")->fetchAll();
+    $result = [];
+    foreach ($rows as $r) {
+        $result[] = ['id' => (int)$r['id'], 'name' => $r['name'] ?? ''];
+    }
+    return $result;
+}
+
+// ─── taskNotes ─────────────────────────────────────────────────
+function _ensureTaskNotesTable() {
+    global $db;
+    $db->exec('CREATE TABLE IF NOT EXISTS task_notes (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        task_id INT NOT NULL,
+        author_id INT NULL,
+        content TEXT,
+        media_urls LONGTEXT NULL,
+        media_types LONGTEXT NULL,
+        is_visible_to_client TINYINT(1) DEFAULT 1,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_task (task_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
+}
+
+function taskNotes_list($input, $ctx) {
+    global $db;
+    _ensureTaskNotesTable();
+    $taskId = (int)($input['taskId'] ?? 0);
+    $stmt = $db->prepare('SELECT * FROM task_notes WHERE task_id = ? ORDER BY created_at DESC');
+    $stmt->execute([$taskId]);
+    $rows = $stmt->fetchAll();
+    $result = [];
+    foreach ($rows as $r) {
+        $result[] = [
+            'id' => (int)$r['id'],
+            'content' => $r['content'] ?? '',
+            'mediaUrls' => $r['media_urls'] ? json_decode($r['media_urls'], true) : [],
+            'mediaTypes' => $r['media_types'] ? json_decode($r['media_types'], true) : [],
+            'isVisibleToClient' => (bool)($r['is_visible_to_client'] ?? true),
+            'createdAt' => $r['created_at'] ?? '',
+        ];
+    }
+    return $result;
+}
+
+function taskNotes_listForClient($input, $ctx) {
+    global $db;
+    _ensureTaskNotesTable();
+    $taskId = (int)($input['taskId'] ?? 0);
+    $stmt = $db->prepare('
+        SELECT n.*, u.name AS author_name
+        FROM task_notes n
+        LEFT JOIN users u ON u.id = n.author_id
+        WHERE n.task_id = ? AND n.is_visible_to_client = 1
+        ORDER BY n.created_at DESC
+    ');
+    $stmt->execute([$taskId]);
+    $rows = $stmt->fetchAll();
+    $result = [];
+    foreach ($rows as $r) {
+        $result[] = [
+            'id' => (int)$r['id'],
+            'content' => $r['content'] ?? '',
+            'authorName' => $r['author_name'] ?? null,
+            'mediaUrls' => $r['media_urls'] ? json_decode($r['media_urls'], true) : [],
+            'mediaTypes' => $r['media_types'] ? json_decode($r['media_types'], true) : [],
+            'createdAt' => $r['created_at'] ? strtotime($r['created_at']) * 1000 : null,
+        ];
+    }
+    return $result;
+}
+
+function taskNotes_create($input, $ctx) {
+    global $db;
+    _ensureTaskNotesTable();
+    $taskId = (int)($input['taskId'] ?? 0);
+    $content = $input['content'] ?? '';
+    $mediaUrls = isset($input['mediaUrls']) ? json_encode($input['mediaUrls']) : null;
+    $mediaTypes = isset($input['mediaTypes']) ? json_encode($input['mediaTypes']) : null;
+    $visible = ($input['isVisibleToClient'] ?? true) ? 1 : 0;
+    $authorId = $ctx['userId'] ?? null;
+
+    $stmt = $db->prepare('INSERT INTO task_notes (task_id, author_id, content, media_urls, media_types, is_visible_to_client) VALUES (?, ?, ?, ?, ?, ?)');
+    $stmt->execute([$taskId, $authorId, $content, $mediaUrls, $mediaTypes, $visible]);
+    $noteId = (int)$db->lastInsertId();
+
+    try {
+        $techName = '';
+        if ($authorId) {
+            $uStmt = $db->prepare("SELECT name, role FROM users WHERE id = ?");
+            $uStmt->execute([$authorId]);
+            $uRow = $uStmt->fetch();
+            $techName = $uRow['name'] ?? '';
+            $role = $uRow['role'] ?? '';
+        }
+        $taskStmt = $db->prepare("SELECT title, technician_id FROM tasks WHERE id = ?");
+        $taskStmt->execute([$taskId]);
+        $task = $taskStmt->fetch();
+        $taskTitle = $task['title'] ?? 'مهمة';
+
+        if (isset($role) && $role === 'technician') {
+            _notifyAdminsAndSupervisors('ملاحظة جديدة', "{$techName} أضاف ملاحظة على: {$taskTitle}", 'task', $taskId, 'task');
+        } elseif ($task && $task['technician_id']) {
+            _notifyUser((int)$task['technician_id'], 'ملاحظة على مهمتك', "تم إضافة ملاحظة على: {$taskTitle}", 'task', $taskId, 'task');
+        }
+    } catch (\Exception $e) { /* ignore */ }
+
+    return ['id' => $noteId];
+}
+
+function taskNotes_delete($input, $ctx) {
+    global $db;
+    _ensureTaskNotesTable();
+    $id = (int)($input['id'] ?? 0);
+    $db->prepare('DELETE FROM task_notes WHERE id = ?')->execute([$id]);
+    return ['success' => true];
+}
+
+// ─── technicianLocation.update ─────────────────────────────────
+function technicianLocation_update($input, $ctx) {
+    global $db;
+
+    $lat = $input['latitude'] ?? null;
+    $lng = $input['longitude'] ?? null;
+    $taskId = $input['taskId'] ?? null;
+    $arrived = $input['arrived'] ?? false;
+
+    // Notify admins when technician arrives at location
+    if ($arrived && $taskId) {
+        try {
+            $techName = '';
+            if ($ctx['userId']) {
+                $uStmt = $db->prepare("SELECT name FROM users WHERE id = ?");
+                $uStmt->execute([$ctx['userId']]);
+                $techName = $uStmt->fetchColumn() ?: 'الفني';
+            }
+            $taskStmt = $db->prepare("SELECT title FROM tasks WHERE id = ?");
+            $taskStmt->execute([(int)$taskId]);
+            $taskTitle = $taskStmt->fetchColumn() ?: 'مهمة';
+
+            _notifyAdminsAndSupervisors(
+                'وصول فني',
+                "{$techName} وصل لموقع المهمة: {$taskTitle}",
+                'task', (int)$taskId, 'task'
+            );
+        } catch (\Exception $e) { /* ignore */ }
+    }
+
+    return ['success' => true];
+}
+
+// ─── Quotations ────────────────────────────────────────────────
+function _ensureQuotationsTable() {
+    global $db;
+    $db->exec('CREATE TABLE IF NOT EXISTS quotations (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        ref_number VARCHAR(50) NULL,
+        client_user_id INT NULL,
+        client_name VARCHAR(255) NULL,
+        client_email VARCHAR(255) NULL,
+        client_phone VARCHAR(50) NULL,
+        items LONGTEXT,
+        subtotal DECIMAL(12,2) DEFAULT 0,
+        installation_percent DECIMAL(5,2) DEFAULT 0,
+        installation_amount DECIMAL(12,2) DEFAULT 0,
+        total_amount DECIMAL(12,2) DEFAULT 0,
+        status VARCHAR(50) DEFAULT "draft",
+        notes TEXT,
+        client_note TEXT NULL,
+        pdf_url TEXT NULL,
+        sent_at DATETIME NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_client (client_user_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
+    // migrate old table if needed
+    try { $db->exec('ALTER TABLE quotations ADD COLUMN IF NOT EXISTS ref_number VARCHAR(50) NULL'); } catch(\Exception $e) {}
+    try { $db->exec('ALTER TABLE quotations ADD COLUMN IF NOT EXISTS client_user_id INT NULL'); } catch(\Exception $e) {}
+    try { $db->exec('ALTER TABLE quotations ADD COLUMN IF NOT EXISTS client_name VARCHAR(255) NULL'); } catch(\Exception $e) {}
+    try { $db->exec('ALTER TABLE quotations ADD COLUMN IF NOT EXISTS client_email VARCHAR(255) NULL'); } catch(\Exception $e) {}
+    try { $db->exec('ALTER TABLE quotations ADD COLUMN IF NOT EXISTS client_phone VARCHAR(50) NULL'); } catch(\Exception $e) {}
+    try { $db->exec('ALTER TABLE quotations ADD COLUMN IF NOT EXISTS subtotal DECIMAL(12,2) DEFAULT 0'); } catch(\Exception $e) {}
+    try { $db->exec('ALTER TABLE quotations ADD COLUMN IF NOT EXISTS installation_percent DECIMAL(5,2) DEFAULT 0'); } catch(\Exception $e) {}
+    try { $db->exec('ALTER TABLE quotations ADD COLUMN IF NOT EXISTS installation_amount DECIMAL(12,2) DEFAULT 0'); } catch(\Exception $e) {}
+    try { $db->exec('ALTER TABLE quotations ADD COLUMN IF NOT EXISTS total_amount DECIMAL(12,2) DEFAULT 0'); } catch(\Exception $e) {}
+    try { $db->exec('ALTER TABLE quotations ADD COLUMN IF NOT EXISTS client_note TEXT NULL'); } catch(\Exception $e) {}
+    try { $db->exec('ALTER TABLE quotations ADD COLUMN IF NOT EXISTS sent_at DATETIME NULL'); } catch(\Exception $e) {}
+}
+
+function quotations_list($ctx) {
+    global $db;
+    _ensureQuotationsTable();
+    $rows = $db->query('SELECT * FROM quotations ORDER BY created_at DESC')->fetchAll();
+    $result = [];
+    foreach ($rows as $r) {
+        $result[] = _formatQuotation($r);
+    }
+    return $result;
+}
+
+function quotations_create($input, $ctx) {
+    global $db;
+    _ensureQuotationsTable();
+
+    $clientUserId = isset($input['clientUserId']) ? (int)$input['clientUserId'] : null;
+    $clientName = $input['clientName'] ?? null;
+    $clientEmail = $input['clientEmail'] ?? null;
+    $clientPhone = $input['clientPhone'] ?? null;
+    $notes = $input['notes'] ?? null;
+    $installPct = (float)($input['installationPercent'] ?? 0);
+    $discountPct = (float)($input['discountPercent'] ?? 0);
+    $discountFixedInput = (float)($input['discountAmount'] ?? 0);
+
+    $items = $input['items'] ?? [];
+    $subtotal = 0;
+    foreach ($items as &$item) {
+        $qty = (int)($item['quantity'] ?? $item['qty'] ?? 1);
+        $unitPrice = (float)($item['unitPrice'] ?? 0);
+        $item['qty'] = $qty;
+        $item['totalPrice'] = $unitPrice * $qty;
+        $subtotal += $item['totalPrice'];
+    }
+    unset($item);
+
+    $installAmt = $installPct > 0 ? $subtotal * $installPct / 100.0 : 0;
+    $discountAmt = $discountPct > 0 ? $subtotal * $discountPct / 100.0 : $discountFixedInput;
+    $totalAmt = $subtotal + $installAmt - $discountAmt;
+    if ($totalAmt < 0) $totalAmt = 0;
+
+    $year = date('Y');
+    $cnt = $db->query("SELECT COUNT(*) FROM quotations WHERE YEAR(created_at) = $year")->fetchColumn();
+    $refNumber = 'QT-' . $year . '-' . str_pad($cnt + 1, 4, '0', STR_PAD_LEFT);
+
+    // Ensure discount columns exist
+    try { $db->exec('ALTER TABLE quotations ADD COLUMN discount_percent DECIMAL(10,2) DEFAULT 0'); } catch (\Exception $e) {}
+    try { $db->exec('ALTER TABLE quotations ADD COLUMN discount_amount DECIMAL(10,2) DEFAULT 0'); } catch (\Exception $e) {}
+
+    $stmt = $db->prepare('INSERT INTO quotations (ref_number, client_user_id, client_name, client_email, client_phone, items, subtotal, installation_percent, installation_amount, discount_percent, discount_amount, total_amount, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+    $stmt->execute([$refNumber, $clientUserId, $clientName, $clientEmail, $clientPhone, json_encode($items), $subtotal, $installPct, $installAmt, $discountPct, $discountAmt, $totalAmt, $notes]);
+    return ['id' => (int)$db->lastInsertId()];
+}
+
+function quotations_getById($input, $ctx) {
+    global $db;
+    _ensureQuotationsTable();
+    $id = (int)($input['id'] ?? 0);
+    $stmt = $db->prepare('SELECT * FROM quotations WHERE id = ?');
+    $stmt->execute([$id]);
+    $r = $stmt->fetch();
+    if (!$r) throw new Exception('Quotation not found');
+    return _formatQuotation($r);
+}
+
+function quotations_getByIdForClient($input, $ctx) {
+    return quotations_getById($input, $ctx);
+}
+
+function quotations_myQuotations($ctx) {
+    global $db;
+    _ensureQuotationsTable();
+    if (!$ctx['userId']) throw new Exception('UNAUTHORIZED');
+    $stmt = $db->prepare('SELECT * FROM quotations WHERE client_user_id = ? ORDER BY created_at DESC');
+    $stmt->execute([$ctx['userId']]);
+    $result = [];
+    foreach ($stmt->fetchAll() as $r) $result[] = _formatQuotation($r);
+    return $result;
+}
+
+function quotations_respond($input, $ctx) {
+    global $db;
+    _ensureQuotationsTable();
+    $id = (int)($input['id'] ?? 0);
+    $response = $input['response'] ?? '';
+    $status = in_array($response, ['accepted','rejected']) ? $response : 'sent';
+    $db->prepare('UPDATE quotations SET status = ?, client_note = ? WHERE id = ?')->execute([$status, $response, $id]);
+
+    try {
+        $qStmt = $db->prepare("SELECT ref_number, client_name FROM quotations WHERE id = ?");
+        $qStmt->execute([$id]);
+        $q = $qStmt->fetch();
+        $ref = $q['ref_number'] ?? "#{$id}";
+        $client = $q['client_name'] ?? 'عميل';
+        $label = $status === 'accepted' ? 'قبل' : ($status === 'rejected' ? 'رفض' : 'رد على');
+        _notifyAdminsAndSupervisors("رد على عرض سعر", "{$client} {$label} عرض السعر {$ref}", 'quotation', $id, 'quotation');
+    } catch (\Exception $e) { /* ignore */ }
+
+    return ['success' => true];
+}
+
+function quotations_generatePdf($input, $ctx) {
+    global $db;
+    _ensureQuotationsTable();
+    $id = (int)($input['id'] ?? 0);
+    $stmt = $db->prepare('SELECT * FROM quotations WHERE id = ?');
+    $stmt->execute([$id]);
+    $r = $stmt->fetch();
+    if (!$r) throw new Exception('Quotation not found');
+    return ['url' => $r['pdf_url'] ?? null, 'refNumber' => $r['ref_number'] ?? '', 'clientPhone' => $r['client_phone'] ?? ''];
+}
+
+function quotations_send($input, $ctx) {
+    global $db;
+    _ensureQuotationsTable();
+    $id = (int)($input['id'] ?? 0);
+    $db->prepare("UPDATE quotations SET status = 'sent', sent_at = NOW() WHERE id = ?")->execute([$id]);
+    return ['success' => true];
+}
+
+function quotations_delete($input, $ctx) {
+    global $db;
+    _ensureQuotationsTable();
+    $id = (int)($input['id'] ?? 0);
+    $db->prepare('DELETE FROM quotations WHERE id = ?')->execute([$id]);
+    return ['success' => true];
+}
+
+function _formatQuotation($r) {
+    $items = $r['items'] ? json_decode($r['items'], true) : [];
+    foreach ($items as &$item) {
+        $qty = (int)($item['quantity'] ?? $item['qty'] ?? 1);
+        $unitPrice = (float)($item['unitPrice'] ?? 0);
+        $item['qty'] = $qty;
+        if (!isset($item['totalPrice'])) $item['totalPrice'] = $unitPrice * $qty;
+    }
+    unset($item);
+
+    return [
+        'id' => (int)$r['id'],
+        'refNumber' => $r['ref_number'] ?? ('QT-' . $r['id']),
+        'clientUserId' => isset($r['client_user_id']) && $r['client_user_id'] ? (int)$r['client_user_id'] : null,
+        'clientName' => $r['client_name'] ?? null,
+        'clientEmail' => $r['client_email'] ?? null,
+        'clientPhone' => $r['client_phone'] ?? null,
+        'items' => $items,
+        'subtotal' => (float)($r['subtotal'] ?? 0),
+        'installationPercent' => (float)($r['installation_percent'] ?? 0),
+        'installationAmount' => (float)($r['installation_amount'] ?? 0),
+        'discountPercent' => (float)($r['discount_percent'] ?? 0),
+        'discountAmount' => (float)($r['discount_amount'] ?? 0),
+        'totalAmount' => (float)($r['total_amount'] ?? 0),
+        'status' => $r['status'] ?? 'draft',
+        'notes' => $r['notes'] ?? null,
+        'clientNote' => $r['client_note'] ?? null,
+        'pdfUrl' => $r['pdf_url'] ?? null,
+        'createdAt' => isset($r['created_at']) ? strtotime($r['created_at']) * 1000 : null,
+        'sentAt' => isset($r['sent_at']) && $r['sent_at'] ? strtotime($r['sent_at']) * 1000 : null,
+    ];
+}
+
+// ─── Orders ────────────────────────────────────────────────────
+function _ensureOrdersTable() {
+    global $db;
+    $db->exec('CREATE TABLE IF NOT EXISTS orders (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NULL,
+        items LONGTEXT,
+        total DECIMAL(12,2) DEFAULT 0,
+        status VARCHAR(50) DEFAULT "pending",
+        shipping_address TEXT NULL,
+        notes TEXT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_user (user_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
+}
+
+function orders_create($input, $ctx) {
+    global $db;
+    _ensureOrdersTable();
+    $userId = $ctx['userId'] ?? null;
+    $items = isset($input['items']) ? json_encode($input['items']) : '[]';
+    $total = $input['total'] ?? 0;
+    $address = $input['shippingAddress'] ?? null;
+    $notes = $input['notes'] ?? null;
+
+    $stmt = $db->prepare('INSERT INTO orders (user_id, items, total, shipping_address, notes) VALUES (?, ?, ?, ?, ?)');
+    $stmt->execute([$userId, $items, $total, $address, $notes]);
+    $orderId = (int)$db->lastInsertId();
+
+    try {
+        _notifyAdminsAndSupervisors('طلب جديد', "طلب جديد رقم #{$orderId} بقيمة {$total}", 'order', $orderId, 'order');
+    } catch (\Exception $e) { /* ignore */ }
+
+    return ['id' => $orderId];
+}
+
+function orders_getMyOrders($ctx) {
+    global $db;
+    _ensureOrdersTable();
+    if (!$ctx['userId']) throw new Exception('UNAUTHORIZED');
+    $stmt = $db->prepare('SELECT * FROM orders WHERE user_id = ? ORDER BY created_at DESC');
+    $stmt->execute([$ctx['userId']]);
+    $result = [];
+    foreach ($stmt->fetchAll() as $r) {
+        $result[] = [
+            'id' => (int)$r['id'],
+            'items' => $r['items'] ? json_decode($r['items'], true) : [],
+            'total' => $r['total'] ?? 0,
+            'status' => $r['status'] ?? 'pending',
+            'shippingAddress' => $r['shipping_address'] ?? null,
+            'notes' => $r['notes'] ?? null,
+            'createdAt' => $r['created_at'] ? strtotime($r['created_at']) * 1000 : null,
+        ];
+    }
+    return $result;
+}
+
+// ─── Helper ────────────────────────────────────────────────────
+function _formatTaskRow($r, $itemRows = []) {
+    $totalProgress = 0;
+    $itemCount = count($itemRows);
+    foreach ($itemRows as $i) {
+        $totalProgress += (int)($i['progress'] ?? ($i['is_completed'] ? 100 : 0));
+    }
+    $overallProgress = $itemCount > 0 ? round($totalProgress / $itemCount) : 0;
+
+    return [
+        'id' => (int)$r['id'],
+        'title' => $r['title'] ?? '',
+        'status' => $r['status'] ?? 'pending',
+        'customerId' => $r['customer_id'] ? (int)$r['customer_id'] : null,
+        'technicianId' => $r['technician_id'] ? (int)$r['technician_id'] : null,
+        'customerName' => $r['customer_name'] ?? null,
+        'customerPhone' => $r['customer_phone'] ?? null,
+        'customerAddress' => $r['customer_address'] ?? null,
+        'customerLocation' => $r['customer_location'] ?? null,
+        'technicianName' => $r['technician_name'] ?? null,
+        'technician' => $r['technician_id'] ? ['id' => (int)$r['technician_id'], 'name' => $r['technician_name'] ?? ''] : null,
+        'scheduledAt' => $r['scheduled_at'] ?? null,
+        'estimatedArrivalAt' => $r['estimated_arrival_at'] ?? null,
+        'amount' => $r['amount'] ?? null,
+        'collectionType' => $r['collection_type'] ?? null,
+        'notes' => $r['notes'] ?? null,
+        'createdAt' => $r['created_at'] ?? null,
+        'overallProgress' => (int)$overallProgress,
+        'items' => array_map(function($i) {
+            return [
+                'id' => (int)$i['id'],
+                'description' => $i['description'],
+                'isCompleted' => (bool)$i['is_completed'],
+                'progress' => (int)($i['progress'] ?? ($i['is_completed'] ? 100 : 0)),
+            ];
+        }, $itemRows),
+    ];
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ─── Appointments (السكرتارية) ────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+
+function _ensureAppointmentsTable() {
+    global $db;
+    $db->exec("CREATE TABLE IF NOT EXISTS appointments (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        title VARCHAR(255) NOT NULL,
+        type VARCHAR(50) DEFAULT 'booking',
+        appointment_date DATETIME NOT NULL,
+        notes TEXT,
+        created_by INT,
+        assigned_to INT,
+        color VARCHAR(30) DEFAULT 'blue',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+        FOREIGN KEY (assigned_to) REFERENCES users(id) ON DELETE SET NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+}
+
+function appointments_list($input, $ctx) {
+    global $db;
+    _ensureAppointmentsTable();
+
+    $userId = $ctx['userId'] ?? null;
+    $month  = (int)($input['month'] ?? date('n'));
+    $year   = (int)($input['year']  ?? date('Y'));
+
+    $startDate = sprintf('%04d-%02d-01 00:00:00', $year, $month);
+    $endMonth  = $month == 12 ? 1 : $month + 1;
+    $endYear   = $month == 12 ? $year + 1 : $year;
+    $endDate   = sprintf('%04d-%02d-01 00:00:00', $endYear, $endMonth);
+
+    $sql = "SELECT a.*, 
+                   creator.name AS creator_name,
+                   assignee.name AS assignee_name
+            FROM appointments a
+            LEFT JOIN users creator  ON creator.id  = a.created_by
+            LEFT JOIN users assignee ON assignee.id = a.assigned_to
+            WHERE a.appointment_date >= ? AND a.appointment_date < ?
+            ORDER BY a.appointment_date ASC";
+    $stmt = $db->prepare($sql);
+    $stmt->execute([$startDate, $endDate]);
+    $rows = $stmt->fetchAll();
+
+    return array_map(function($r) {
+        return [
+            'id'            => (int)$r['id'],
+            'title'         => $r['title'],
+            'type'          => $r['type'],
+            'appointmentDate' => $r['appointment_date'],
+            'notes'         => $r['notes'] ?? '',
+            'createdBy'     => $r['created_by'] ? (int)$r['created_by'] : null,
+            'creatorName'   => $r['creator_name'] ?? '',
+            'assignedTo'    => $r['assigned_to'] ? (int)$r['assigned_to'] : null,
+            'assigneeName'  => $r['assignee_name'] ?? '',
+            'color'         => $r['color'] ?? 'blue',
+            'createdAt'     => $r['created_at'],
+        ];
+    }, $rows);
+}
+
+function appointments_create($input, $ctx) {
+    global $db;
+    _ensureAppointmentsTable();
+
+    $title   = $input['title'] ?? '';
+    $type    = $input['type'] ?? 'booking';
+    $dateStr = $input['appointmentDate'] ?? '';
+    $notes   = $input['notes'] ?? '';
+    $assignedTo = !empty($input['assignedTo']) ? (int)$input['assignedTo'] : null;
+    $color   = $input['color'] ?? 'blue';
+    $createdBy = $ctx['userId'] ?? null;
+
+    if (empty($title) || empty($dateStr)) {
+        throw new Exception('العنوان والتاريخ مطلوبان');
+    }
+
+    $stmt = $db->prepare("INSERT INTO appointments (title, type, appointment_date, notes, created_by, assigned_to, color) VALUES (?, ?, ?, ?, ?, ?, ?)");
+    $stmt->execute([$title, $type, $dateStr, $notes, $createdBy, $assignedTo, $color]);
+
+    return ['success' => true, 'id' => (int)$db->lastInsertId()];
+}
+
+function appointments_delete($input, $ctx) {
+    global $db;
+    _ensureAppointmentsTable();
+
+    $id = (int)($input['id'] ?? 0);
+    if ($id <= 0) throw new Exception('معرف الموعد غير صالح');
+
+    $stmt = $db->prepare("DELETE FROM appointments WHERE id = ?");
+    $stmt->execute([$id]);
+
+    return ['success' => true];
+}
+
+function appointments_staffList($ctx) {
+    global $db;
+    $rows = $db->query("SELECT id, name, email, role FROM users WHERE role IN ('admin', 'staff', 'technician') ORDER BY name ASC")->fetchAll();
+    return array_map(function($r) {
+        return [
+            'id'    => (int)$r['id'],
+            'name'  => $r['name'],
+            'email' => $r['email'],
+            'role'  => $r['role'],
+        ];
+    }, $rows);
+}

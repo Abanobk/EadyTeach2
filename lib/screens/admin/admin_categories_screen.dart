@@ -75,7 +75,8 @@ class _AdminCategoriesScreenState extends State<AdminCategoriesScreen> {
                     if (picked == null) return;
                     setModalState(() => uploading = true);
                     try {
-                      final url = await ApiService.uploadFile(picked.path);
+                      final pickedBytes = await picked.readAsBytes();
+                      final url = await ApiService.uploadFile(picked.path, bytes: pickedBytes, filename: picked.name);
                       setModalState(() {
                         imageUrl = url;
                         uploading = false;
@@ -103,7 +104,7 @@ class _AdminCategoriesScreenState extends State<AdminCategoriesScreen> {
                                 children: [
                                   ClipRRect(
                                     borderRadius: BorderRadius.circular(12),
-                                    child: Image.network(imageUrl!, width: double.infinity, height: 120, fit: BoxFit.cover,
+                                    child: Image.network(ApiService.proxyImageUrl(imageUrl!), width: double.infinity, height: 120, fit: BoxFit.cover,
                                         errorBuilder: (_, __, ___) => const Center(child: Icon(Icons.broken_image, color: AppColors.muted, size: 40))),
                                   ),
                                   Positioned(
@@ -252,7 +253,10 @@ class _AdminCategoriesScreenState extends State<AdminCategoriesScreen> {
                   itemCount: _categories.length,
                   itemBuilder: (_, i) {
                     final cat = _categories[i];
-                    final imgUrl = cat['imageUrl'] as String?;
+                    final rawImgUrl = cat['imageUrl'] as String?;
+                    final imgUrl = (rawImgUrl != null && rawImgUrl.isNotEmpty)
+                        ? ApiService.proxyImageUrl(rawImgUrl)
+                        : null;
                     final name = cat['nameAr'] ?? cat['name'] ?? '';
 
                     return GestureDetector(

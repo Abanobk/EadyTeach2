@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../providers/auth_provider.dart';
 import '../../utils/app_theme.dart';
-import 'admin_login_screen.dart';
 
 class RoleSelectScreen extends StatelessWidget {
   const RoleSelectScreen({super.key});
@@ -39,7 +38,7 @@ class RoleSelectScreen extends StatelessWidget {
                 ),
                 const SizedBox(height: 16),
                 Text(
-                  'مرحباً، ${user?.name ?? ''}',
+                  'مرحباً، ${auth.userDisplayName}',
                   style: const TextStyle(
                     color: AppColors.text,
                     fontSize: 24,
@@ -71,29 +70,18 @@ class RoleSelectScreen extends StatelessWidget {
                   color: const Color(0xFF2E7D32),
                   onTap: () => Navigator.pushReplacementNamed(context, '/technician'),
                 ),
-                const SizedBox(height: 12),
-
-                // Admin - if already logged in as admin go directly, else show login
-                _RoleCard(
-                  icon: Icons.dashboard_outlined,
-                  title: 'مسؤول',
-                  subtitle: 'لوحة التحكم الكاملة — المنتجات، العملاء، المهام',
-                  color: const Color(0xFF7B4F1A),
-                  badge: user?.isAdmin == true ? 'دورك الحالي' : null,
-                  onTap: () {
-                    if (user?.isAdmin == true) {
-                      // Already authenticated as admin, go directly
-                      Navigator.pushReplacementNamed(context, '/admin');
-                    } else {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const AdminLoginScreen(),
-                        ),
-                      );
-                    }
-                  },
-                ),
+                if (auth.canAccessAdmin) ...[
+                  const SizedBox(height: 12),
+                  // Admin - shown ONLY to admin users
+                  _RoleCard(
+                    icon: Icons.dashboard_outlined,
+                    title: 'مسؤول',
+                    subtitle: 'لوحة التحكم الكاملة — المنتجات، العملاء، المهام',
+                    color: const Color(0xFF7B4F1A),
+                    badge: 'دورك الحالي',
+                    onTap: () => Navigator.pushReplacementNamed(context, '/admin'),
+                  ),
+                ],
 
                 const SizedBox(height: 24),
                 TextButton.icon(

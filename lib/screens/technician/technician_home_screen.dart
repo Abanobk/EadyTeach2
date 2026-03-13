@@ -3,7 +3,10 @@ import 'package:provider/provider.dart';
 import '../../providers/auth_provider.dart';
 import '../../services/api_service.dart';
 import '../../utils/app_theme.dart';
+import '../../modules/survey/screens/survey_entry_screen.dart';
+import '../admin/admin_notifications_screen.dart';
 import 'task_detail_screen.dart';
+import 'technician_custody_screen.dart';
 
 class TechnicianHomeScreen extends StatefulWidget {
   const TechnicianHomeScreen({super.key});
@@ -15,30 +18,133 @@ class TechnicianHomeScreen extends StatefulWidget {
 class _TechnicianHomeScreenState extends State<TechnicianHomeScreen> {
   List<dynamic> _tasks = [];
   bool _loading = true;
-  String _filter = 'all';
+  String _filter = 'current';
+  int _unreadNotifs = 0;
 
   @override
   void initState() {
     super.initState();
-    _loadTasks();
+    _loadUnreadCount();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _loadTasks(context);
+    });
   }
 
-  Future<void> _loadTasks() async {
+  static List<dynamic> _parseTasksResponse(dynamic data) {
+    if (data is List) return data;
+    if (data is Map) {
+      final list = data['items'] ?? data['tasks'] ?? data['list'];
+      if (list is List) return list;
+    }
+    return [];
+  }
+
+  /// المهمة معيّنة لهذا الفني؟ (حسب technicianId أو technician.id أو technicianName)
+  static bool _isTaskAssignedToTechnician(dynamic t, UserModel user, String displayName) {
+    final userId = user.id;
+    final tid = t['technicianId'];
+    final tidInt = tid is int ? tid : (tid != null ? int.tryParse(tid.toString()) : null);
+    if (tidInt != null && tidInt == userId) return true;
+    final tech = t['technician'];
+    if (tech is Map) {
+      final techId = tech['id'];
+      final techIdInt = techId is int ? techId : (techId != null ? int.tryParse(techId.toString()) : null);
+      if (techIdInt != null && techIdInt == userId) return true;
+      final techName = tech['name']?.toString().trim();
+      if (techName != null && techName.isNotEmpty && (techName == displayName || techName == user.name)) return true;
+    }
+    final tName = t['technicianName']?.toString().trim();
+    if (tName != null && tName.isNotEmpty && (tName == displayName || tName == user.name)) return true;
+    return false;
+  }
+
+  Future<void> _loadUnreadCount() async {
+    try {
+      final res = await ApiService.query('notifications.getUnreadCount');
+      final raw = res['data'];
+      int count = 0;
+      if (raw is int) count = raw;
+      else if (raw is Map) count = (raw['count'] is int) ? raw['count'] : int.tryParse('${raw['count']}') ?? 0;
+      if (mounted) setState(() => _unreadNotifs = count);
+    } catch (_) {}
+  }
+
+  Future<void> _loadTasks(BuildContext context) async {
     setState(() => _loading = true);
     try {
-      final res = await ApiService.query('tasks.getMyTasks');
-      setState(() {
-        _tasks = res['data'] ?? [];
-        _loading = false;
-      });
+      final user = context.read<AuthProvider>().user;
+      final userId = user?.id;
+
+      List<dynamic> raw = [];
+
+      // 1) جلب مهام الفني من getMyTasks
+      try {
+        final res = await ApiService.query('tasks.getMyTasks');
+        raw = _parseTasksResponse(res['data']);
+      } catch (_) {}
+
+      // 2) إذا كانت فارغة: جلب كل المهام من tasks.list ثم فلترة حسب الفني الحالي
+      // (يدعم technicianId، أو technician.id، أو technicianName لضمان ظهور المهام المعيّنة من المسؤول)
+      if (raw.isEmpty && user != null) {
+        try {
+          final res = await ApiService.query('tasks.list');
+          final all = _parseTasksResponse(res['data']);
+          final displayName = context.read<AuthProvider>().userDisplayName;
+          raw = all.where((t) => _isTaskAssignedToTechnician(t, user, displayName)).toList();
+        } catch (_) {}
+      }
+
+      if (mounted) {
+        setState(() {
+          _tasks = raw;
+          _loading = false;
+        });
+      }
     } catch (e) {
-      setState(() => _loading = false);
+      if (mounted) setState(() => _loading = false);
     }
   }
 
+  String _todayStr() {
+    final now = DateTime.now();
+    return '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+  }
+
   List<dynamic> get _filteredTasks {
-    if (_filter == 'all') return _tasks;
-    return _tasks.where((t) => t['status'] == _filter).toList();
+    final today = _todayStr();
+    switch (_filter) {
+      case 'current':
+        return _tasks.where((t) {
+          final s = t['status'];
+          return s != 'completed' && s != 'cancelled';
+        }).toList();
+      case 'today':
+        return _tasks.where((t) {
+          final s = t['status'];
+          if (s == 'cancelled') return false;
+          final sched = t['scheduledAt']?.toString() ?? '';
+          return sched.startsWith(today);
+        }).toList();
+      case 'overdue':
+        return _tasks.where((t) {
+          final s = t['status'];
+          if (s == 'completed' || s == 'cancelled') return false;
+          final sched = t['scheduledAt']?.toString() ?? '';
+          if (sched.isEmpty) return false;
+          try {
+            final schedDate = DateTime.parse(sched);
+            final todayDate = DateTime.now();
+            return DateTime(schedDate.year, schedDate.month, schedDate.day)
+                .isBefore(DateTime(todayDate.year, todayDate.month, todayDate.day));
+          } catch (_) {
+            return false;
+          }
+        }).toList();
+      case 'completed':
+        return _tasks.where((t) => t['status'] == 'completed').toList();
+      default:
+        return _tasks;
+    }
   }
 
   @override
@@ -51,6 +157,10 @@ class _TechnicianHomeScreenState extends State<TechnicianHomeScreen> {
         backgroundColor: AppColors.bg,
         appBar: AppBar(
           backgroundColor: AppColors.card,
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back_ios_new, color: AppColors.primary, size: 20),
+            onPressed: () => Navigator.pushReplacementNamed(context, '/role-select'),
+          ),
           title: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -59,15 +169,60 @@ class _TechnicianHomeScreenState extends State<TechnicianHomeScreen> {
                       color: AppColors.text,
                       fontWeight: FontWeight.bold,
                       fontSize: 18)),
-              Text(auth.user?.name ?? '',
+              Text(auth.userDisplayName,
                   style:
                       const TextStyle(color: AppColors.muted, fontSize: 12)),
             ],
           ),
           actions: [
+            Stack(
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.notifications_outlined, color: AppColors.primary),
+                  tooltip: 'الإشعارات',
+                  onPressed: () async {
+                    await Navigator.push(context, MaterialPageRoute(builder: (_) => const AdminNotificationsScreen()));
+                    _loadUnreadCount();
+                  },
+                ),
+                if (_unreadNotifs > 0)
+                  Positioned(
+                    right: 6, top: 6,
+                    child: Container(
+                      padding: const EdgeInsets.all(4),
+                      decoration: const BoxDecoration(color: Colors.red, shape: BoxShape.circle),
+                      child: Text('$_unreadNotifs', style: const TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold)),
+                    ),
+                  ),
+              ],
+            ),
+            IconButton(
+              icon: const Icon(Icons.account_balance_wallet_outlined, color: Colors.orange),
+              tooltip: 'عهدتي',
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const TechnicianCustodyScreen(),
+                  ),
+                );
+              },
+            ),
+            IconButton(
+              icon: const Icon(Icons.home_work_outlined, color: AppColors.muted),
+              tooltip: 'Smart Survey',
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => SurveyEntryScreen(),
+                  ),
+                );
+              },
+            ),
             IconButton(
               icon: const Icon(Icons.refresh, color: AppColors.muted),
-              onPressed: _loadTasks,
+              onPressed: () => _loadTasks(context),
             ),
             IconButton(
               icon: const Icon(Icons.logout, color: AppColors.muted),
@@ -82,27 +237,71 @@ class _TechnicianHomeScreenState extends State<TechnicianHomeScreen> {
         ),
         body: Column(
           children: [
-            // Filter chips
+            // Custody quick-access banner
+            GestureDetector(
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const TechnicianCustodyScreen()),
+              ),
+              child: Container(
+                margin: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    colors: [Color(0xFFFF9800), Color(0xFFF57C00)],
+                  ),
+                  borderRadius: BorderRadius.circular(12),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.orange.withOpacity(0.3),
+                      blurRadius: 8,
+                      offset: const Offset(0, 3),
+                    ),
+                  ],
+                ),
+                child: const Row(
+                  children: [
+                    Icon(Icons.account_balance_wallet, color: Colors.white, size: 28),
+                    SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('عهدتي والمصاريف',
+                              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15)),
+                          Text('اضغط لعرض العهدة وتسجيل المصاريف',
+                              style: TextStyle(color: Colors.white70, fontSize: 11)),
+                        ],
+                      ),
+                    ),
+                    Icon(Icons.arrow_forward_ios, color: Colors.white70, size: 18),
+                  ],
+                ),
+              ),
+            ),
             SizedBox(
-              height: 52,
+              height: 56,
               child: ListView(
                 scrollDirection: Axis.horizontal,
                 padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                 children: [
-                  _FilterChip(
-                      label: 'الكل',
-                      selected: _filter == 'all',
-                      onTap: () => setState(() => _filter = 'all')),
-                  _FilterChip(
-                      label: 'جديدة',
-                      selected: _filter == 'pending',
-                      onTap: () => setState(() => _filter = 'pending')),
-                  _FilterChip(
-                      label: 'جاري',
-                      selected: _filter == 'in_progress',
-                      onTap: () => setState(() => _filter = 'in_progress')),
-                  _FilterChip(
-                      label: 'مكتملة',
+                  _FilterChipNew(
+                      label: 'المهام الحالية', icon: Icons.pending_actions,
+                      selected: _filter == 'current',
+                      onTap: () => setState(() => _filter = 'current')),
+                  _FilterChipNew(
+                      label: 'مهام اليوم', icon: Icons.today,
+                      activeColor: Colors.blue,
+                      selected: _filter == 'today',
+                      onTap: () => setState(() => _filter = 'today')),
+                  _FilterChipNew(
+                      label: 'مهام متأخرة', icon: Icons.warning_amber_rounded,
+                      activeColor: Colors.red,
+                      selected: _filter == 'overdue',
+                      onTap: () => setState(() => _filter = 'overdue')),
+                  _FilterChipNew(
+                      label: 'مهام منفذة', icon: Icons.check_circle_outline,
+                      activeColor: Colors.green,
                       selected: _filter == 'completed',
                       onTap: () => setState(() => _filter = 'completed')),
                 ],
@@ -138,7 +337,7 @@ class _TechnicianHomeScreenState extends State<TechnicianHomeScreen> {
                                 builder: (_) => TaskDetailScreen(
                                     task: _filteredTasks[i]),
                               ),
-                            ).then((_) => _loadTasks()),
+                            ).then((_) => _loadTasks(context)),
                           ),
                         ),
             ),
@@ -149,34 +348,45 @@ class _TechnicianHomeScreenState extends State<TechnicianHomeScreen> {
   }
 }
 
-class _FilterChip extends StatelessWidget {
+class _FilterChipNew extends StatelessWidget {
   final String label;
+  final IconData icon;
   final bool selected;
   final VoidCallback onTap;
+  final Color? activeColor;
 
-  const _FilterChip(
-      {required this.label, required this.selected, required this.onTap});
+  const _FilterChipNew({
+    required this.label,
+    required this.icon,
+    required this.selected,
+    required this.onTap,
+    this.activeColor,
+  });
 
   @override
   Widget build(BuildContext context) {
+    final color = activeColor ?? AppColors.primary;
     return GestureDetector(
       onTap: onTap,
       child: Container(
         margin: const EdgeInsets.only(left: 8),
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
         decoration: BoxDecoration(
-          color: selected ? AppColors.primary : AppColors.card,
+          color: selected ? color.withOpacity(0.15) : AppColors.card,
           borderRadius: BorderRadius.circular(20),
-          border: Border.all(
-              color: selected ? AppColors.primary : AppColors.border),
+          border: Border.all(color: selected ? color : AppColors.border),
         ),
-        child: Text(
-          label,
-          style: TextStyle(
-            color: selected ? Colors.black : AppColors.text,
-            fontWeight: selected ? FontWeight.bold : FontWeight.normal,
-            fontSize: 13,
-          ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 15, color: selected ? color : AppColors.muted),
+            const SizedBox(width: 6),
+            Text(label, style: TextStyle(
+              color: selected ? color : AppColors.text,
+              fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+              fontSize: 13,
+            )),
+          ],
         ),
       ),
     );
@@ -235,6 +445,52 @@ class _TaskCard extends StatelessWidget {
               ),
             ],
             const SizedBox(height: 10),
+            // Progress bar
+            Builder(builder: (_) {
+              final items = task['items'] is List ? task['items'] as List : [];
+              if (items.isEmpty) return const SizedBox.shrink();
+              final overallProgress = task['overallProgress'] is int
+                  ? task['overallProgress'] as int
+                  : () {
+                      int total = 0;
+                      for (final item in items) {
+                        if (item is Map) {
+                          total += (item['progress'] as int?) ?? ((item['isCompleted'] == true) ? 100 : 0);
+                        }
+                      }
+                      return items.isNotEmpty ? (total / items.length).round() : 0;
+                    }();
+              final pColor = overallProgress >= 100
+                  ? Colors.green
+                  : overallProgress >= 75
+                      ? Colors.blue
+                      : overallProgress >= 50
+                          ? Colors.orange
+                          : overallProgress >= 25
+                              ? const Color(0xFFF57C00)
+                              : Colors.red.shade400;
+              return Column(
+                children: [
+                  Row(children: [
+                    Text('$overallProgress%',
+                        style: TextStyle(color: pColor, fontWeight: FontWeight.w900, fontSize: 13)),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(4),
+                        child: LinearProgressIndicator(
+                          value: overallProgress / 100.0,
+                          backgroundColor: AppColors.border,
+                          valueColor: AlwaysStoppedAnimation<Color>(pColor),
+                          minHeight: 6,
+                        ),
+                      ),
+                    ),
+                  ]),
+                  const SizedBox(height: 8),
+                ],
+              );
+            }),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [

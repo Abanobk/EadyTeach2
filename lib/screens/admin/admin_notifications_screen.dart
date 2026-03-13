@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../../providers/auth_provider.dart';
 import '../../utils/app_theme.dart';
 import '../../services/api_service.dart';
 
@@ -63,9 +65,9 @@ class _AdminNotificationsScreenState extends State<AdminNotificationsScreen> {
       else if (_target == 'technicians') { targetType = 'role'; targetRole = 'technician'; }
       final input = <String, dynamic>{
         'title': _titleCtrl.text,
-        'message': _bodyCtrl.text,
+        'body': _bodyCtrl.text,
         'targetType': targetType,
-        'linkType': 'none',
+        'linkType': 'general',
         'sendNow': true,
       };
       if (targetRole != null) input['targetRole'] = targetRole;
@@ -87,9 +89,13 @@ class _AdminNotificationsScreenState extends State<AdminNotificationsScreen> {
   String _formatTime(dynamic ts) {
     if (ts == null) return '';
     try {
-      final dt = DateTime.fromMillisecondsSinceEpoch(ts is int ? ts : int.parse(ts.toString()));
+      if (ts is int) {
+        final dt = DateTime.fromMillisecondsSinceEpoch(ts);
+        return '${dt.day}/${dt.month}/${dt.year} ${dt.hour.toString().padLeft(2,'0')}:${dt.minute.toString().padLeft(2,'0')}';
+      }
+      final dt = DateTime.parse(ts.toString());
       return '${dt.day}/${dt.month}/${dt.year} ${dt.hour.toString().padLeft(2,'0')}:${dt.minute.toString().padLeft(2,'0')}';
-    } catch (_) { return ''; }
+    } catch (_) { return ts.toString(); }
   }
 
   @override
@@ -122,7 +128,8 @@ class _AdminNotificationsScreenState extends State<AdminNotificationsScreen> {
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          // ─── Send Notification ─────────────────────────────────────────
+          // ─── Send Notification (admins only) ───────────────────────────
+          if (context.read<AuthProvider>().hasPermission('notifications.send'))
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
@@ -191,7 +198,8 @@ class _AdminNotificationsScreenState extends State<AdminNotificationsScreen> {
               ),
             ]),
           ),
-          const SizedBox(height: 20),
+          if (context.read<AuthProvider>().hasPermission('notifications.send'))
+            const SizedBox(height: 20),
           // ─── Notifications List ────────────────────────────────────────
           Row(children: [
             const Text('الإشعارات السابقة', style: TextStyle(color: AppColors.text, fontSize: 16, fontWeight: FontWeight.bold)),
@@ -245,7 +253,7 @@ class _AdminNotificationsScreenState extends State<AdminNotificationsScreen> {
                         ),
                       ),
                       const SizedBox(height: 4),
-                      Text(n['message'] ?? '', style: const TextStyle(color: AppColors.muted, fontSize: 13)),
+                      Text(n['body'] ?? n['message'] ?? '', style: const TextStyle(color: AppColors.muted, fontSize: 13)),
                       const SizedBox(height: 4),
                       Text(_formatTime(n['createdAt']), style: const TextStyle(color: AppColors.muted, fontSize: 11)),
                     ])),

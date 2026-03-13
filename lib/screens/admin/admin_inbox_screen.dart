@@ -114,6 +114,85 @@ class _AdminInboxScreenState extends State<AdminInboxScreen> {
     } catch (_) {}
   }
 
+  Future<void> _editConversationName(dynamic conv) async {
+    final controller = TextEditingController(text: conv['senderName'] ?? '');
+    final name = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.card,
+        title: const Text('تعديل اسم المرسل', style: TextStyle(color: AppColors.text, fontSize: 16)),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          style: const TextStyle(color: AppColors.text),
+          decoration: InputDecoration(
+            hintText: 'اكتب الاسم...',
+            hintStyle: const TextStyle(color: AppColors.muted),
+            filled: true,
+            fillColor: AppColors.bg,
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('إلغاء', style: TextStyle(color: AppColors.muted))),
+          TextButton(onPressed: () => Navigator.pop(ctx, controller.text.trim()), child: const Text('حفظ', style: TextStyle(color: AppColors.primary))),
+        ],
+      ),
+    );
+    if (name != null && name.isNotEmpty) {
+      try {
+        await ApiService.mutate('meta.updateConversationName', input: {
+          'conversationId': conv['id'],
+          'name': name,
+        });
+        if (_selectedConversation != null && _selectedConversation['id'] == conv['id']) {
+          setState(() => _selectedConversation['senderName'] = name);
+        }
+        await _load();
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('فشل التحديث: $e'), backgroundColor: Colors.red));
+        }
+      }
+    }
+  }
+
+  Future<void> _changeConversationStatus(dynamic conv) async {
+    final statuses = {'open': 'مفتوح', 'pending': 'معلق', 'resolved': 'محلول'};
+    final current = conv['status'] ?? 'open';
+    final selected = await showDialog<String>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        backgroundColor: AppColors.card,
+        title: const Text('تغيير حالة المحادثة', style: TextStyle(color: AppColors.text, fontSize: 16)),
+        children: statuses.entries.map((e) => SimpleDialogOption(
+          onPressed: () => Navigator.pop(ctx, e.key),
+          child: Row(children: [
+            Icon(current == e.key ? Icons.radio_button_checked : Icons.radio_button_off, color: AppColors.primary, size: 20),
+            const SizedBox(width: 12),
+            Text(e.value, style: const TextStyle(color: AppColors.text)),
+          ]),
+        )).toList(),
+      ),
+    );
+    if (selected != null && selected != current) {
+      try {
+        await ApiService.mutate('meta.updateConversationStatus', input: {
+          'conversationId': conv['id'],
+          'status': selected,
+        });
+        if (_selectedConversation != null && _selectedConversation['id'] == conv['id']) {
+          setState(() => _selectedConversation['status'] = selected);
+        }
+        await _load();
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('فشل التحديث: $e'), backgroundColor: Colors.red));
+        }
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final isWide = MediaQuery.of(context).size.width > 700;
@@ -135,14 +214,16 @@ class _AdminInboxScreenState extends State<AdminInboxScreen> {
         appBar: AppBar(
           backgroundColor: AppColors.card,
           leading: IconButton(icon: const Icon(Icons.arrow_back, color: AppColors.text), onPressed: () => setState(() => _selectedConversation = null)),
-          title: Text(_selectedConversation['senderName'] ?? _selectedConversation['senderId'] ?? 'محادثة', style: const TextStyle(color: AppColors.text, fontSize: 16)),
+          title: GestureDetector(
+            onTap: () => _editConversationName(_selectedConversation),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              Flexible(child: Text(_selectedConversation['senderName'] ?? _selectedConversation['senderId'] ?? 'محادثة', style: const TextStyle(color: AppColors.text, fontSize: 16), overflow: TextOverflow.ellipsis)),
+              const SizedBox(width: 4),
+              const Icon(Icons.edit, color: AppColors.muted, size: 14),
+            ]),
+          ),
           actions: [
-            if (_selectedConversation['leadId'] == null)
-              TextButton.icon(
-                onPressed: () => _convertToLead(_selectedConversation),
-                icon: const Icon(Icons.star_border, color: AppColors.primary, size: 18),
-                label: const Text('تحويل لليد', style: TextStyle(color: AppColors.primary, fontSize: 12)),
-              ),
+            IconButton(icon: const Icon(Icons.more_vert, color: AppColors.text), onPressed: () => _showConversationOptions(_selectedConversation)),
           ],
         ),
         body: _buildChatPanel(),
@@ -197,6 +278,7 @@ class _AdminInboxScreenState extends State<AdminInboxScreen> {
                       final statusLabels = {'open': 'مفتوح', 'resolved': 'محلول', 'pending': 'معلق'};
                       return GestureDetector(
                         onTap: () => _openConversation(conv),
+                        onLongPress: () => _showConversationOptions(conv),
                         child: Container(
                           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                           decoration: BoxDecoration(
@@ -219,10 +301,13 @@ class _AdminInboxScreenState extends State<AdminInboxScreen> {
                               Text(lastMsg.length > 50 ? '${lastMsg.substring(0, 50)}...' : lastMsg, style: const TextStyle(color: AppColors.muted, fontSize: 12), overflow: TextOverflow.ellipsis),
                               const SizedBox(height: 4),
                               Row(children: [
-                                Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                  decoration: BoxDecoration(color: (statusColors[status] ?? Colors.grey).withOpacity(0.15), borderRadius: BorderRadius.circular(4)),
-                                  child: Text(statusLabels[status] ?? status, style: TextStyle(color: statusColors[status] ?? Colors.grey, fontSize: 10)),
+                                GestureDetector(
+                                  onTap: () => _changeConversationStatus(conv),
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                    decoration: BoxDecoration(color: (statusColors[status] ?? Colors.grey).withOpacity(0.15), borderRadius: BorderRadius.circular(4)),
+                                    child: Text(statusLabels[status] ?? status, style: TextStyle(color: statusColors[status] ?? Colors.grey, fontSize: 10)),
+                                  ),
                                 ),
                                 const SizedBox(width: 6),
                                 Container(
@@ -261,10 +346,17 @@ class _AdminInboxScreenState extends State<AdminInboxScreen> {
           child: Row(children: [
             Container(width: 40, height: 40, decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.15), borderRadius: BorderRadius.circular(20)), child: Center(child: Text(senderName.isNotEmpty ? senderName[0].toUpperCase() : 'M', style: const TextStyle(color: AppColors.primary, fontWeight: FontWeight.bold)))),
             const SizedBox(width: 12),
-            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(senderName, style: const TextStyle(color: AppColors.text, fontWeight: FontWeight.bold)),
-              Text(conv['platform'] ?? 'messenger', style: const TextStyle(color: AppColors.muted, fontSize: 12)),
-            ])),
+            Expanded(child: GestureDetector(
+              onTap: () => _editConversationName(conv),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Row(children: [
+                  Flexible(child: Text(senderName, style: const TextStyle(color: AppColors.text, fontWeight: FontWeight.bold), overflow: TextOverflow.ellipsis)),
+                  const SizedBox(width: 4),
+                  const Icon(Icons.edit, color: AppColors.muted, size: 14),
+                ]),
+                Text(conv['platform'] ?? 'messenger', style: const TextStyle(color: AppColors.muted, fontSize: 12)),
+              ]),
+            )),
             if (!hasLead)
               TextButton.icon(onPressed: () => _convertToLead(conv), icon: const Icon(Icons.star_border, color: AppColors.primary, size: 18), label: const Text('تحويل لليد', style: TextStyle(color: AppColors.primary, fontSize: 13)))
             else
@@ -360,6 +452,38 @@ class _AdminInboxScreenState extends State<AdminInboxScreen> {
           border: Border.all(color: isSelected ? AppColors.primary : AppColors.border),
         ),
         child: Text(label, style: TextStyle(color: isSelected ? Colors.black : AppColors.muted, fontSize: 12, fontWeight: isSelected ? FontWeight.bold : FontWeight.normal)),
+      ),
+    );
+  }
+
+  void _showConversationOptions(dynamic conv) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppColors.card,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (ctx) => SafeArea(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          const SizedBox(height: 8),
+          Container(width: 40, height: 4, decoration: BoxDecoration(color: AppColors.muted.withOpacity(0.3), borderRadius: BorderRadius.circular(2))),
+          const SizedBox(height: 16),
+          ListTile(
+            leading: const Icon(Icons.edit, color: AppColors.primary),
+            title: const Text('تعديل اسم المرسل', style: TextStyle(color: AppColors.text)),
+            onTap: () { Navigator.pop(ctx); _editConversationName(conv); },
+          ),
+          ListTile(
+            leading: const Icon(Icons.flag, color: Colors.orange),
+            title: const Text('تغيير الحالة', style: TextStyle(color: AppColors.text)),
+            onTap: () { Navigator.pop(ctx); _changeConversationStatus(conv); },
+          ),
+          if (conv['leadId'] == null)
+            ListTile(
+              leading: const Icon(Icons.star_border, color: AppColors.primary),
+              title: const Text('تحويل لليد', style: TextStyle(color: AppColors.text)),
+              onTap: () { Navigator.pop(ctx); _convertToLead(conv); },
+            ),
+          const SizedBox(height: 8),
+        ]),
       ),
     );
   }

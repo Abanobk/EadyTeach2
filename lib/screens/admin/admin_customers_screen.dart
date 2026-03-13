@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../../services/api_service.dart';
 import '../../utils/app_theme.dart';
 
@@ -100,13 +101,16 @@ class _AdminCustomersScreenState extends State<AdminCustomersScreen> {
                 const SizedBox(height: 6),
                 TextField(controller: addressCtrl, style: const TextStyle(color: AppColors.text), decoration: _inputDecoration(hint: 'العنوان')),
                 const SizedBox(height: 12),
-                // ── حقل الموقع الجغرافي ──────────────────────────────────
+                const Text('الموقع الجغرافي', style: TextStyle(color: AppColors.muted, fontSize: 13)),
+                const SizedBox(height: 6),
+                TextField(
+                  controller: locationCtrl,
+                  style: const TextStyle(color: AppColors.text),
+                  decoration: _inputDecoration(hint: 'الصق رابط Google Maps أو إحداثيات'),
+                ),
+                const SizedBox(height: 6),
                 Row(
                   children: [
-                    const Expanded(
-                      child: Text('الموقع الجغرافي',
-                          style: TextStyle(color: AppColors.muted, fontSize: 13)),
-                    ),
                     TextButton.icon(
                       onPressed: loadingLocation ? null : () async {
                         setModalState(() => loadingLocation = true);
@@ -127,7 +131,7 @@ class _AdminCustomersScreenState extends State<AdminCustomersScreen> {
                           final pos = await Geolocator.getCurrentPosition(
                               desiredAccuracy: LocationAccuracy.high);
                           locationCtrl.text =
-                              '${pos.latitude.toStringAsFixed(5)},${pos.longitude.toStringAsFixed(5)}';
+                              'https://www.google.com/maps?q=${pos.latitude},${pos.longitude}';
                         } catch (_) {}
                         setModalState(() => loadingLocation = false);
                       },
@@ -143,15 +147,8 @@ class _AdminCustomersScreenState extends State<AdminCustomersScreen> {
                     ),
                   ],
                 ),
-                const SizedBox(height: 6),
-                TextField(
-                  controller: locationCtrl,
-                  style: const TextStyle(color: AppColors.text),
-                  decoration: _inputDecoration(hint: 'مثال: 31.17469,30.12870'),
-                  keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
-                ),
-                const SizedBox(height: 4),
-                const Text('أدخل خط العرض وخط الطول مفصولين بفاصلة، أو اضغط "موقعي الحالي"',
+                const SizedBox(height: 2),
+                const Text('الصق رابط خرائط جوجل أو اضغط "موقعي الحالي"',
                     style: TextStyle(color: AppColors.muted, fontSize: 11)),
                 const SizedBox(height: 12),
                 // ── الدور ────────────────────────────────────────────────
@@ -219,6 +216,14 @@ class _AdminCustomersScreenState extends State<AdminCustomersScreen> {
         ),
       ),
     );
+  }
+
+  /// حسابات المالك — لا يمكن حذفها، ونعرض "مالك" بدل زر الحذف
+  static const _ownerEmails = ['abanob.kamal.pr@gmail.com'];
+
+  bool _isOwner(Map<String, dynamic> u) {
+    final email = (u['email'] as String? ?? '').trim().toLowerCase();
+    return _ownerEmails.contains(email);
   }
 
   void _deleteUser(Map<String, dynamic> user) async {
@@ -336,11 +341,26 @@ class _AdminCustomersScreenState extends State<AdminCustomersScreen> {
                                 ],
                                 if (u['location'] != null && u['location'] != '') ...[
                                   const SizedBox(height: 2),
-                                  Row(children: [
-                                    const Icon(Icons.location_on, color: AppColors.primary, size: 12),
-                                    const SizedBox(width: 4),
-                                    Text(u['location'], style: const TextStyle(color: AppColors.muted, fontSize: 11)),
-                                  ]),
+                                  GestureDetector(
+                                    onTap: () {
+                                      final loc = u['location'] as String;
+                                      if (loc.startsWith('http')) {
+                                        launchUrl(Uri.parse(loc), mode: LaunchMode.externalApplication);
+                                      } else if (loc.contains(',')) {
+                                        launchUrl(Uri.parse('https://www.google.com/maps?q=$loc'), mode: LaunchMode.externalApplication);
+                                      }
+                                    },
+                                    child: Row(children: [
+                                      const Icon(Icons.location_on, color: AppColors.primary, size: 12),
+                                      const SizedBox(width: 4),
+                                      Flexible(
+                                        child: Text(
+                                          u['location'].toString().startsWith('http') ? 'فتح الموقع على الخريطة' : u['location'],
+                                          style: const TextStyle(color: AppColors.primary, fontSize: 11, decoration: TextDecoration.underline),
+                                        ),
+                                      ),
+                                    ]),
+                                  ),
                                 ],
                               ]),
                               trailing: Row(mainAxisSize: MainAxisSize.min, children: [
@@ -348,10 +368,16 @@ class _AdminCustomersScreenState extends State<AdminCustomersScreen> {
                                   icon: const Icon(Icons.edit_outlined, color: AppColors.muted, size: 20),
                                   onPressed: () => _showUserDialog(Map<String, dynamic>.from(u)),
                                 ),
-                                IconButton(
-                                  icon: const Icon(Icons.delete_outline, color: AppColors.error, size: 20),
-                                  onPressed: () => _deleteUser(Map<String, dynamic>.from(u)),
-                                ),
+                                if (_isOwner(u))
+                                  Padding(
+                                    padding: const EdgeInsets.only(left: 8),
+                                    child: Text('مالك', style: TextStyle(color: AppColors.primary, fontSize: 12, fontWeight: FontWeight.w600)),
+                                  )
+                                else
+                                  IconButton(
+                                    icon: const Icon(Icons.delete_outline, color: AppColors.error, size: 20),
+                                    onPressed: () => _deleteUser(Map<String, dynamic>.from(u)),
+                                  ),
                               ]),
                             ),
                           ),

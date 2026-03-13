@@ -1,7 +1,15 @@
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:http/http.dart' as http;
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../services/api_service.dart';
 import '../../utils/app_theme.dart';
+import '../../utils/pdf_saver_stub.dart'
+    if (dart.library.html) '../../utils/pdf_saver_web.dart' as pdf_saver;
 
 class QuotationDetailScreen extends StatefulWidget {
   final int quotationId;
@@ -17,6 +25,7 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen> {
   bool _sending = false;
   bool _deleting = false;
   bool _generatingPdf = false;
+  bool _downloadingPdf = false;
 
   final _statusLabels = {
     'draft': 'مسودة',
@@ -53,29 +62,246 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen> {
     }
   }
 
+  /// فتح واتساب برسالة جاهزة (مع أو بدون رابط PDF)
+  Future<bool> _openWhatsAppWithMessage({
+    required String msgText,
+    String? phone,
+  }) async {
+    final msg = Uri.encodeComponent(msgText);
+    if (phone != null && phone.isNotEmpty) {
+      final waUrl = 'https://wa.me/$phone?text=$msg';
+      final uri = Uri.parse(waUrl);
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+        return true;
+      }
+    }
+    final intentUri = Uri.parse('whatsapp://send?text=$msg');
+    if (await canLaunchUrl(intentUri)) {
+      await launchUrl(intentUri, mode: LaunchMode.externalApplication);
+      return true;
+    }
+    final webUri = Uri.parse('https://api.whatsapp.com/send?text=$msg');
+    if (await canLaunchUrl(webUri)) {
+      await launchUrl(webUri, mode: LaunchMode.externalApplication);
+      return true;
+    }
+    return false;
+  }
+
+  Future<pw.ImageProvider?> _fetchPdfImage(String? rawUrl) async {
+    if (rawUrl == null || rawUrl.isEmpty) return null;
+    try {
+      final url = ApiService.proxyImageUrl(rawUrl);
+      final resp = await http.get(Uri.parse(url)).timeout(const Duration(seconds: 10));
+      if (resp.statusCode == 200 && resp.bodyBytes.isNotEmpty) {
+        return pw.MemoryImage(resp.bodyBytes);
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  Future<Uint8List> _buildPdfBytes() async {
+    final q = _quotation!;
+    final arabicFont = await PdfGoogleFonts.cairoRegular();
+    final arabicBold = await PdfGoogleFonts.cairoBold();
+    final items = (q['items'] as List? ?? []);
+    final subtotal = double.tryParse(q['subtotal']?.toString() ?? '0') ?? 0;
+    final installPct = double.tryParse(q['installationPercent']?.toString() ?? '0') ?? 0;
+    final installAmt = double.tryParse(q['installationAmount']?.toString() ?? '0') ?? 0;
+    final discountPct = double.tryParse(q['discountPercent']?.toString() ?? '0') ?? 0;
+    final discountAmt = double.tryParse(q['discountAmount']?.toString() ?? '0') ?? 0;
+    final totalAmt = double.tryParse(q['totalAmount']?.toString() ?? '0') ?? 0;
+
+    final Map<int, pw.ImageProvider> itemImages = {};
+    for (int i = 0; i < items.length; i++) {
+      final item = items[i] as Map;
+      final imgUrl = item['imageUrl'] as String? ?? item['productImage'] as String?;
+      final img = await _fetchPdfImage(imgUrl);
+      if (img != null) itemImages[i] = img;
+    }
+
+    final pdf = pw.Document();
+    pdf.addPage(
+      pw.MultiPage(
+        textDirection: pw.TextDirection.rtl,
+        theme: pw.ThemeData.withFont(base: arabicFont, bold: arabicBold),
+        pageFormat: PdfPageFormat.a4,
+        margin: const pw.EdgeInsets.all(40),
+        header: (ctx) => pw.Column(children: [
+          pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
+            pw.Text('Easy Tech', style: pw.TextStyle(fontSize: 22, fontWeight: pw.FontWeight.bold, color: PdfColors.blue800)),
+            pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.end, children: [
+              pw.Text('عرض سعر', style: pw.TextStyle(fontSize: 18, fontWeight: pw.FontWeight.bold)),
+              pw.Text(q['refNumber'] ?? '', style: const pw.TextStyle(fontSize: 12, color: PdfColors.grey700)),
+            ]),
+          ]),
+          pw.Divider(thickness: 2, color: PdfColors.blue800),
+          pw.SizedBox(height: 10),
+        ]),
+        build: (ctx) => [
+          pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
+            pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [
+              pw.Text('العميل: ${q['clientName'] ?? '-'}', style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold)),
+              if (q['clientPhone'] != null) pw.Text('الهاتف: ${q['clientPhone']}', style: const pw.TextStyle(fontSize: 11)),
+              if (q['clientEmail'] != null) pw.Text('البريد: ${q['clientEmail']}', style: const pw.TextStyle(fontSize: 11)),
+            ]),
+            pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.end, children: [
+              pw.Text('التاريخ: ${_formatDate(q['createdAt'])}', style: const pw.TextStyle(fontSize: 11)),
+            ]),
+          ]),
+          pw.SizedBox(height: 20),
+          // Table header
+          pw.Container(
+            padding: const pw.EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+            decoration: const pw.BoxDecoration(color: PdfColors.blue800),
+            child: pw.Row(children: [
+              pw.Expanded(flex: 1, child: pw.Text('#', style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold, color: PdfColors.white), textAlign: pw.TextAlign.center)),
+              pw.Expanded(flex: 2, child: pw.Text('الصورة', style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold, color: PdfColors.white), textAlign: pw.TextAlign.center)),
+              pw.Expanded(flex: 4, child: pw.Text('المنتج', style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold, color: PdfColors.white), textAlign: pw.TextAlign.center)),
+              pw.Expanded(flex: 1, child: pw.Text('الكمية', style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold, color: PdfColors.white), textAlign: pw.TextAlign.center)),
+              pw.Expanded(flex: 2, child: pw.Text('سعر الوحدة', style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold, color: PdfColors.white), textAlign: pw.TextAlign.center)),
+              pw.Expanded(flex: 2, child: pw.Text('الإجمالي', style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold, color: PdfColors.white), textAlign: pw.TextAlign.center)),
+            ]),
+          ),
+          // Table rows with images
+          ...List.generate(items.length, (i) {
+            final item = items[i] as Map;
+            final up = double.tryParse(item['unitPrice']?.toString() ?? '0') ?? 0;
+            final qty = int.tryParse(item['qty']?.toString() ?? item['quantity']?.toString() ?? '1') ?? 1;
+            final tp = double.tryParse(item['totalPrice']?.toString() ?? '0') ?? (up * qty);
+            final hasImage = itemImages.containsKey(i);
+            return pw.Container(
+              padding: const pw.EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: pw.BoxDecoration(
+                border: pw.Border.all(color: PdfColors.grey300, width: 0.5),
+                color: i % 2 == 0 ? PdfColors.white : PdfColors.grey50,
+              ),
+              child: pw.Row(crossAxisAlignment: pw.CrossAxisAlignment.center, children: [
+                pw.Expanded(flex: 1, child: pw.Text('${i + 1}', style: const pw.TextStyle(fontSize: 9), textAlign: pw.TextAlign.center)),
+                pw.Expanded(flex: 2, child: pw.Center(
+                  child: hasImage
+                      ? pw.ClipRRect(
+                          horizontalRadius: 4, verticalRadius: 4,
+                          child: pw.Image(itemImages[i]!, width: 50, height: 50, fit: pw.BoxFit.cover))
+                      : pw.Container(
+                          width: 50, height: 50,
+                          decoration: pw.BoxDecoration(color: PdfColors.grey200, borderRadius: pw.BorderRadius.circular(4)),
+                          child: pw.Center(child: pw.Text('--', style: const pw.TextStyle(fontSize: 8, color: PdfColors.grey500)))),
+                )),
+                pw.Expanded(flex: 4, child: pw.Padding(
+                  padding: const pw.EdgeInsets.symmetric(horizontal: 4),
+                  child: pw.Text(item['productName'] ?? '', style: const pw.TextStyle(fontSize: 10)),
+                )),
+                pw.Expanded(flex: 1, child: pw.Text('$qty', style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold), textAlign: pw.TextAlign.center)),
+                pw.Expanded(flex: 2, child: pw.Text('${up.toStringAsFixed(0)} ج.م', style: const pw.TextStyle(fontSize: 9), textAlign: pw.TextAlign.center)),
+                pw.Expanded(flex: 2, child: pw.Text('${tp.toStringAsFixed(0)} ج.م', style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold, color: PdfColors.blue800), textAlign: pw.TextAlign.center)),
+              ]),
+            );
+          }),
+          pw.SizedBox(height: 16),
+          pw.Container(
+            alignment: pw.Alignment.centerLeft,
+            padding: const pw.EdgeInsets.all(12),
+            decoration: pw.BoxDecoration(border: pw.Border.all(color: PdfColors.grey400), borderRadius: pw.BorderRadius.circular(4)),
+            child: pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [
+              pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
+                pw.Text('الإجمالي الجزئي', style: const pw.TextStyle(fontSize: 11)),
+                pw.Text('${subtotal.toStringAsFixed(0)} ج.م', style: pw.TextStyle(fontSize: 11, fontWeight: pw.FontWeight.bold)),
+              ]),
+              if (installAmt > 0) ...[
+                pw.SizedBox(height: 4),
+                pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
+                  pw.Text('تركيبات (${installPct.toStringAsFixed(0)}%)', style: const pw.TextStyle(fontSize: 11)),
+                  pw.Text('${installAmt.toStringAsFixed(0)} ج.م', style: pw.TextStyle(fontSize: 11, fontWeight: pw.FontWeight.bold)),
+                ]),
+              ],
+              if (discountAmt > 0) ...[
+                pw.SizedBox(height: 4),
+                pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
+                  pw.Text(discountPct > 0 ? 'خصم (${discountPct.toStringAsFixed(0)}%)' : 'خصم', style: const pw.TextStyle(fontSize: 11, color: PdfColors.red)),
+                  pw.Text('- ${discountAmt.toStringAsFixed(0)} ج.م', style: pw.TextStyle(fontSize: 11, fontWeight: pw.FontWeight.bold, color: PdfColors.red)),
+                ]),
+              ],
+              pw.Divider(),
+              pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
+                pw.Text('الإجمالي النهائي', style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold)),
+                pw.Text('${totalAmt.toStringAsFixed(0)} ج.م', style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold, color: PdfColors.blue800)),
+              ]),
+            ]),
+          ),
+          if (q['notes'] != null && q['notes'].toString().isNotEmpty) ...[
+            pw.SizedBox(height: 16),
+            pw.Text('ملاحظات: ${q['notes']}', style: const pw.TextStyle(fontSize: 10, color: PdfColors.grey700)),
+          ],
+          pw.SizedBox(height: 30),
+          pw.Center(child: pw.Text('شكراً لثقتكم بنا - Easy Tech', style: pw.TextStyle(fontSize: 11, fontWeight: pw.FontWeight.bold, color: PdfColors.blue800))),
+        ],
+      ),
+    );
+    return pdf.save();
+  }
+
   Future<void> _sendWhatsApp() async {
     if (_quotation == null) return;
     setState(() => _generatingPdf = true);
     try {
-      final res = await ApiService.mutate('quotations.generatePdf', input: {'id': widget.quotationId});
-      final pdfUrl = res['url'] as String? ?? '';
-      final refNumber = res['refNumber'] as String? ?? '';
-      final clientName = _quotation!['clientName'] as String? ?? '';
-      final clientPhone = (_quotation!['clientPhone'] as String? ?? '').replaceAll(RegExp(r'[^0-9]'), '');
-      final intlPhone = clientPhone.startsWith('0') ? '2\$clientPhone' : clientPhone;
-      final msg = Uri.encodeComponent('مرحباً $clientName,\n\nيسعدنا إرسال عرض السعر رقم $refNumber إليكم.\n\nرابط عرض السعر PDF:\n$pdfUrl\n\nشكراً لثقتكم بنا - Easy Tech');
-      final waUrl = intlPhone.isNotEmpty
-          ? 'https://wa.me/$intlPhone?text=$msg'
-          : 'https://wa.me/?text=$msg';
-      final uri = Uri.parse(waUrl);
-      if (await canLaunchUrl(uri)) {
-        await launchUrl(uri, mode: LaunchMode.externalApplication);
-      } else {
-        if (mounted) {
+      final bytes = await _buildPdfBytes();
+      final refNumber = (_quotation!['refNumber'] as String? ?? 'quote').replaceAll(RegExp(r'[^\w\-]'), '_');
+
+      if (kIsWeb) {
+        // On web: try Web Share API (works on mobile browsers with file sharing)
+        // Falls back to downloading the PDF if not supported
+        final shared = await pdf_saver.sharePdfBytes(bytes, '$refNumber.pdf');
+        if (!shared && mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('تعذر فتح WhatsApp'), backgroundColor: AppColors.error),
+            const SnackBar(
+              content: Text('تم تحميل PDF - افتح واتساب وأرفق الملف يدويًا'),
+              backgroundColor: AppColors.primary,
+              duration: Duration(seconds: 4),
+            ),
           );
+          // Open WhatsApp with text message so user can attach the downloaded PDF
+          final clientName = _quotation!['clientName'] as String? ?? '';
+          final rawPhone = (_quotation!['clientPhone'] as String? ?? '').replaceAll(RegExp(r'[^0-9]'), '');
+          final intlPhone = rawPhone.startsWith('0') ? '2$rawPhone' : (rawPhone.startsWith('2') ? rawPhone : '2$rawPhone');
+          final totalAmt = double.tryParse(_quotation!['totalAmount']?.toString() ?? '0') ?? 0;
+          final msgText = 'مرحباً $clientName,\n\nمرفق عرض السعر رقم $refNumber\nالإجمالي: ${totalAmt.toStringAsFixed(0)} ج.م\n\nشكراً لثقتكم بنا - Easy Tech';
+          await _openWhatsAppWithMessage(msgText: msgText, phone: intlPhone.isNotEmpty ? intlPhone : null);
         }
+      } else {
+        // On native mobile: share PDF via system share sheet
+        await Printing.sharePdf(bytes: bytes, filename: '$refNumber.pdf');
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('خطأ: $e'), backgroundColor: AppColors.error),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _generatingPdf = false);
+    }
+  }
+
+  Future<void> _downloadPdf() async {
+    if (_quotation == null) return;
+    setState(() => _downloadingPdf = true);
+    try {
+      final bytes = await _buildPdfBytes();
+      final refNumber = (_quotation!['refNumber'] as String? ?? 'quote').replaceAll(RegExp(r'[^\w\-]'), '_');
+      if (kIsWeb) {
+        await pdf_saver.savePdfBytes(bytes, '$refNumber.pdf');
+      } else {
+        await Printing.layoutPdf(
+          onLayout: (_) async => bytes,
+          name: '$refNumber.pdf',
+        );
+      }
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('تم توليد PDF بنجاح'), backgroundColor: AppColors.success),
+        );
       }
     } catch (e) {
       if (mounted) {
@@ -84,7 +310,7 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen> {
         );
       }
     } finally {
-      if (mounted) setState(() => _generatingPdf = false);
+      if (mounted) setState(() => _downloadingPdf = false);
     }
   }
 
@@ -332,6 +558,13 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen> {
                                           label: 'تركيبات (${double.tryParse(_quotation!['installationPercent']?.toString() ?? '0')?.toStringAsFixed(0)}%)',
                                           value: '${double.tryParse(_quotation!['installationAmount']?.toString() ?? '0')?.toStringAsFixed(0) ?? 0} ج.م',
                                         ),
+                                      if ((double.tryParse(_quotation!['discountAmount']?.toString() ?? '0') ?? 0) > 0)
+                                        _TotalRow(
+                                          label: (double.tryParse(_quotation!['discountPercent']?.toString() ?? '0') ?? 0) > 0
+                                              ? 'خصم (${double.tryParse(_quotation!['discountPercent']?.toString() ?? '0')?.toStringAsFixed(0)}%)'
+                                              : 'خصم',
+                                          value: '- ${double.tryParse(_quotation!['discountAmount']?.toString() ?? '0')?.toStringAsFixed(0) ?? 0} ج.م',
+                                        ),
                                       const SizedBox(height: 4),
                                       Row(
                                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -348,16 +581,32 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen> {
                             ),
                           ),
                           const SizedBox(height: 20),
-                          // Action buttons
-                          // WhatsApp PDF button - always visible
+                          // تحميل PDF على الجهاز
                           SizedBox(
                             width: double.infinity,
                             child: ElevatedButton.icon(
-                              onPressed: _generatingPdf ? null : _sendWhatsApp,
+                              onPressed: (_downloadingPdf || _generatingPdf) ? null : _downloadPdf,
+                              icon: _downloadingPdf
+                                  ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                                  : const Icon(Icons.download, color: Colors.white),
+                              label: Text(_downloadingPdf ? 'جاري التحميل...' : 'تحميل PDF على الجهاز'),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: AppColors.primary,
+                                foregroundColor: Colors.white,
+                                padding: const EdgeInsets.symmetric(vertical: 14),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          // WhatsApp PDF button
+                          SizedBox(
+                            width: double.infinity,
+                            child: ElevatedButton.icon(
+                              onPressed: (_generatingPdf || _downloadingPdf) ? null : _sendWhatsApp,
                               icon: _generatingPdf
                                   ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
                                   : const Icon(Icons.chat, color: Colors.white),
-                              label: Text(_generatingPdf ? 'جاري توليد PDF...' : 'إرسال عبر WhatsApp PDF'),
+                              label: Text(_generatingPdf ? 'جاري توليد PDF...' : 'مشاركة PDF عبر WhatsApp'),
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: const Color(0xFF25D366),
                                 foregroundColor: Colors.white,

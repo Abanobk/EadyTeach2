@@ -25,7 +25,6 @@ class AppTheme {
         surface: AppColors.card,
         error: AppColors.error,
       ),
-      fontFamily: 'Cairo',
       appBarTheme: const AppBarTheme(
         backgroundColor: AppColors.card,
         foregroundColor: AppColors.text,
@@ -35,7 +34,6 @@ class AppTheme {
           color: AppColors.text,
           fontSize: 18,
           fontWeight: FontWeight.bold,
-          fontFamily: 'Cairo',
         ),
       ),
       elevatedButtonTheme: ElevatedButtonThemeData(
@@ -47,7 +45,6 @@ class AppTheme {
           textStyle: const TextStyle(
             fontWeight: FontWeight.bold,
             fontSize: 15,
-            fontFamily: 'Cairo',
           ),
         ),
       ),

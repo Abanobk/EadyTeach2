@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -35,6 +36,7 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
   // ETA
   int? _etaMinutes;
   bool _etaLoading = false;
+  Timer? _etaTimer;
 
   // Finish task
   bool _finishing = false;
@@ -69,6 +71,7 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
     _cashAmountCtrl.dispose();
     _noteCtrl.dispose();
     _locationSub?.cancel();
+    _etaTimer?.cancel();
     super.dispose();
   }
 
@@ -96,10 +99,18 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
         double? clientLat, clientLng;
         final locStr = customer?['location']?.toString();
         if (locStr != null && locStr.isNotEmpty) {
-          final parts = locStr.split(',');
-          if (parts.length >= 2) {
-            clientLat = double.tryParse(parts[0].trim());
-            clientLng = double.tryParse(parts[1].trim());
+          if (locStr.startsWith('http')) {
+            final coordMatch = RegExp(r'[?&@](-?\d+\.?\d*)[,/](-?\d+\.?\d*)').firstMatch(locStr);
+            if (coordMatch != null) {
+              clientLat = double.tryParse(coordMatch.group(1)!);
+              clientLng = double.tryParse(coordMatch.group(2)!);
+            }
+          } else {
+            final parts = locStr.split(',');
+            if (parts.length >= 2) {
+              clientLat = double.tryParse(parts[0].trim());
+              clientLng = double.tryParse(parts[1].trim());
+            }
           }
         }
         try {
@@ -117,9 +128,17 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
               setState(() => _arrivedDetected = true);
               _locationSub?.cancel();
               setState(() => _gpsActive = false);
+              try {
+                await ApiService.mutate('technicianLocation.update', input: {
+                  'taskId': id,
+                  'latitude': pos.latitude,
+                  'longitude': pos.longitude,
+                  'arrived': true,
+                });
+              } catch (_) {}
               if (mounted) {
                 ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                  content: Text('📍 تم اكتشاف وصولك للعميل تلقائياً! تم إشعار العميل.'),
+                  content: Text('📍 تم اكتشاف وصولك للعميل تلقائياً! تم إشعار المسؤولين.'),
                   backgroundColor: Colors.green,
                   duration: Duration(seconds: 4),
                 ));
@@ -206,7 +225,8 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
     if (picked == null) return;
     setState(() => _uploadingNoteMedia = true);
     try {
-      final url = await ApiService.uploadFile(picked.path);
+      final bytes = await picked.readAsBytes();
+      final url = await ApiService.uploadFile(picked.path, bytes: bytes, filename: picked.name);
       setState(() {
         _noteMediaUrls.add(url);
         _noteMediaTypes.add(isVideo ? 'video' : 'image');
@@ -373,22 +393,361 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
 
   Future<void> _toggleItem(Map<String, dynamic> item) async {
     final newVal = !(item['isCompleted'] as bool? ?? false);
-    setState(() => item['isCompleted'] = newVal);
+    setState(() {
+      item['isCompleted'] = newVal;
+      item['progress'] = newVal ? 100 : 0;
+    });
     try {
-      await ApiService.mutate('tasks.updateItem', input: {'id': item['id'], 'isCompleted': newVal});
+      await ApiService.mutate('tasks.updateItem', input: {
+        'id': item['id'],
+        'isCompleted': newVal,
+        'progress': newVal ? 100 : 0,
+      });
     } catch (_) {
-      setState(() => item['isCompleted'] = !newVal);
+      setState(() {
+        item['isCompleted'] = !newVal;
+        item['progress'] = !newVal ? 100 : 0;
+      });
     }
+  }
+
+  Future<void> _updateItemProgress(Map<String, dynamic> item, int progress) async {
+    final oldProgress = item['progress'] as int? ?? 0;
+    final oldCompleted = item['isCompleted'] as bool? ?? false;
+    setState(() {
+      item['progress'] = progress;
+      item['isCompleted'] = progress >= 100;
+    });
+    try {
+      await ApiService.mutate('tasks.updateItem', input: {
+        'id': item['id'],
+        'progress': progress,
+      });
+    } catch (_) {
+      setState(() {
+        item['progress'] = oldProgress;
+        item['isCompleted'] = oldCompleted;
+      });
+    }
+  }
+
+  void _showProgressEditor(Map<String, dynamic> item) {
+    final currentProgress = item['progress'] as int? ?? 0;
+    double sliderVal = currentProgress.toDouble();
+    final noteCtrl = TextEditingController(text: item['progressNote']?.toString() ?? '');
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: AppColors.card,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => Directionality(
+        textDirection: TextDirection.rtl,
+        child: StatefulBuilder(
+          builder: (ctx, setSheetState) => Padding(
+            padding: EdgeInsets.only(
+              left: 20, right: 20, top: 20,
+              bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    width: 40, height: 4,
+                    decoration: BoxDecoration(
+                      color: AppColors.border,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  item['description']?.toString() ?? '',
+                  style: const TextStyle(color: AppColors.text, fontSize: 16, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 20),
+                Row(
+                  children: [
+                    const Text('نسبة الإنجاز', style: TextStyle(color: AppColors.muted, fontSize: 13)),
+                    const Spacer(),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: _progressColor(sliderVal.round()).withOpacity(0.15),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Text(
+                        '${sliderVal.round()}%',
+                        style: TextStyle(
+                          color: _progressColor(sliderVal.round()),
+                          fontWeight: FontWeight.w900,
+                          fontSize: 16,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                SliderTheme(
+                  data: SliderThemeData(
+                    activeTrackColor: _progressColor(sliderVal.round()),
+                    inactiveTrackColor: AppColors.border,
+                    thumbColor: _progressColor(sliderVal.round()),
+                    overlayColor: _progressColor(sliderVal.round()).withOpacity(0.2),
+                    trackHeight: 8,
+                    thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 12),
+                  ),
+                  child: Slider(
+                    value: sliderVal,
+                    min: 0,
+                    max: 100,
+                    divisions: 20,
+                    onChanged: (v) => setSheetState(() => sliderVal = v),
+                  ),
+                ),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [0, 25, 50, 75, 100].map((v) => GestureDetector(
+                    onTap: () => setSheetState(() => sliderVal = v.toDouble()),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: sliderVal.round() == v
+                            ? _progressColor(v).withOpacity(0.2)
+                            : AppColors.bg,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: sliderVal.round() == v
+                              ? _progressColor(v)
+                              : AppColors.border,
+                        ),
+                      ),
+                      child: Text(
+                        '$v%',
+                        style: TextStyle(
+                          color: sliderVal.round() == v
+                              ? _progressColor(v)
+                              : AppColors.muted,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                  )).toList(),
+                ),
+                const SizedBox(height: 20),
+                const Text('ملاحظات العمل', style: TextStyle(color: AppColors.muted, fontSize: 13)),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: noteCtrl,
+                  maxLines: 3,
+                  style: const TextStyle(color: AppColors.text),
+                  decoration: InputDecoration(
+                    hintText: 'اكتب ايه الي اتعمل في البند ده...',
+                    hintStyle: const TextStyle(color: AppColors.muted, fontSize: 13),
+                    filled: true,
+                    fillColor: AppColors.bg,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10),
+                      borderSide: const BorderSide(color: AppColors.border),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10),
+                      borderSide: const BorderSide(color: AppColors.border),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10),
+                      borderSide: const BorderSide(color: AppColors.primary, width: 1.5),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: () async {
+                      Navigator.pop(ctx);
+                      final newProgress = sliderVal.round();
+                      setState(() {
+                        item['progress'] = newProgress;
+                        item['isCompleted'] = newProgress >= 100;
+                        item['progressNote'] = noteCtrl.text;
+                      });
+                      try {
+                        await ApiService.mutate('tasks.updateItem', input: {
+                          'id': item['id'],
+                          'progress': newProgress,
+                          'progressNote': noteCtrl.text,
+                        });
+                      } catch (_) {}
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.primary,
+                      foregroundColor: Colors.black,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                    child: const Text('حفظ التقدم', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 15)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Color _progressColor(int progress) {
+    if (progress >= 100) return Colors.green;
+    if (progress >= 75) return const Color(0xFF2196F3);
+    if (progress >= 50) return Colors.orange;
+    if (progress >= 25) return const Color(0xFFF57C00);
+    return Colors.red.shade400;
+  }
+
+  void _showMediaPicker(int itemId) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppColors.card,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (ctx) => Directionality(
+        textDirection: TextDirection.rtl,
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              const Text('إرفاق ملف', style: TextStyle(color: AppColors.text, fontWeight: FontWeight.bold, fontSize: 16)),
+              const SizedBox(height: 16),
+              ListTile(
+                leading: const Icon(Icons.photo_library, color: AppColors.primary),
+                title: const Text('صورة من المعرض', style: TextStyle(color: AppColors.text)),
+                onTap: () { Navigator.pop(ctx); _uploadItemMedia(itemId, false, ImageSource.gallery); },
+              ),
+              if (!kIsWeb)
+                ListTile(
+                  leading: const Icon(Icons.camera_alt, color: AppColors.primary),
+                  title: const Text('التقاط صورة', style: TextStyle(color: AppColors.text)),
+                  onTap: () { Navigator.pop(ctx); _uploadItemMedia(itemId, false, ImageSource.camera); },
+                ),
+              ListTile(
+                leading: const Icon(Icons.videocam, color: Colors.red),
+                title: const Text('فيديو من المعرض', style: TextStyle(color: AppColors.text)),
+                onTap: () { Navigator.pop(ctx); _uploadItemMedia(itemId, true, ImageSource.gallery); },
+              ),
+            ]),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _uploadItemMedia(int itemId, bool isVideo, ImageSource source) async {
+    final picker = ImagePicker();
+    final XFile? picked;
+    if (isVideo) {
+      picked = await picker.pickVideo(source: source);
+    } else {
+      picked = await picker.pickImage(source: source, imageQuality: 70);
+    }
+    if (picked == null) return;
+    setState(() => _mediaUploading[itemId] = true);
+    try {
+      final bytes = await picked.readAsBytes();
+      final url = await ApiService.uploadFile(
+        picked.path,
+        bytes: bytes,
+        filename: picked.name,
+      );
+      await ApiService.mutate('tasks.addItemMedia', input: {
+        'itemId': itemId,
+        'url': url,
+        'type': isVideo ? 'video' : 'image',
+      });
+      await _loadFullTask();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('خطأ في الرفع: $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _mediaUploading[itemId] = false);
+    }
+  }
+
+  void _confirmDeleteMedia(int itemId, int index) {
+    showDialog(
+      context: context,
+      builder: (ctx) => Directionality(
+        textDirection: TextDirection.rtl,
+        child: AlertDialog(
+          backgroundColor: AppColors.card,
+          title: const Text('حذف الملف', style: TextStyle(color: AppColors.text)),
+          content: const Text('هل تريد حذف هذا الملف؟', style: TextStyle(color: AppColors.muted)),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('إلغاء', style: TextStyle(color: AppColors.muted)),
+            ),
+            TextButton(
+              onPressed: () {
+                Navigator.pop(ctx);
+                _deleteMedia(itemId, index);
+              },
+              child: const Text('حذف', style: TextStyle(color: Colors.red)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _deleteMedia(int itemId, int index) async {
+    try {
+      await ApiService.mutate('tasks.removeItemMedia', input: {
+        'itemId': itemId,
+        'index': index,
+      });
+      await _loadFullTask();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('تم حذف الملف'), backgroundColor: Colors.green),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('خطأ في الحذف: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  void _showImageDialog(String url) {
+    showDialog(
+      context: context,
+      builder: (_) => Dialog(
+        backgroundColor: Colors.black,
+        child: InteractiveViewer(
+          child: Image.network(url, fit: BoxFit.contain),
+        ),
+      ),
+    );
   }
 
   Future<void> _pickTransferPhoto() async {
     final picker = ImagePicker();
     final picked = await picker.pickImage(source: ImageSource.gallery, imageQuality: 70);
     if (picked == null) return;
+    final pickedBytes = await picked.readAsBytes();
     setState(() { _uploading = true; _transferImageFile = File(picked.path); });
     try {
-      // Upload to server
-      final result = await ApiService.uploadFile(picked.path);
+      final result = await ApiService.uploadFile(picked.path, bytes: pickedBytes, filename: picked.name);
       setState(() {
         _transferImageUrl = result;
         _uploading = false;
@@ -454,19 +813,42 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
     final customer = _customer;
     final technician = _technician;
     final scheduledAt = task['scheduledAt']?.toString();
+    final estimatedArrivalAt = task['estimatedArrivalAt']?.toString();
     final amount = task['amount']?.toString();
     final collectionType = task['collectionType']?.toString();
     final notes = task['notes']?.toString();
 
-    // Parse customer location
+    // Parse customer location (supports URLs and "lat,lng" format)
     double? clientLat, clientLng;
+    String? locationUrl;
     final locStr = customer?['location']?.toString();
     if (locStr != null && locStr.isNotEmpty) {
-      final parts = locStr.split(',');
-      if (parts.length >= 2) {
-        clientLat = double.tryParse(parts[0].trim());
-        clientLng = double.tryParse(parts[1].trim());
+      if (locStr.startsWith('http')) {
+        locationUrl = locStr;
+        final coordMatch = RegExp(r'[?&@](-?\d+\.?\d*)[,/](-?\d+\.?\d*)').firstMatch(locStr);
+        if (coordMatch != null) {
+          clientLat = double.tryParse(coordMatch.group(1)!);
+          clientLng = double.tryParse(coordMatch.group(2)!);
+        }
+      } else {
+        final parts = locStr.split(',');
+        if (parts.length >= 2) {
+          clientLat = double.tryParse(parts[0].trim());
+          clientLng = double.tryParse(parts[1].trim());
+        }
       }
+    }
+
+    // بدء حساب وقت الوصول المتوقع تلقائياً عند توفر موقع العميل
+    if (clientLat != null && clientLng != null && _etaTimer == null) {
+      _etaTimer = Timer(const Duration(seconds: 5), () {
+        if (!mounted) return;
+        _calcEta(clientLat!, clientLng!);
+        _etaTimer = Timer.periodic(const Duration(minutes: 1), (_) {
+          if (!mounted) return;
+          _calcEta(clientLat!, clientLng!);
+        });
+      });
     }
 
     return Directionality(
@@ -562,7 +944,36 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
                     const SizedBox(height: 16),
                     const Text('الموقع الجغرافي', style: TextStyle(color: AppColors.muted, fontSize: 11)),
                     const SizedBox(height: 6),
-                    if (clientLat != null && clientLng != null) ...[
+                    if (locationUrl != null) ...[
+                      _webBtn(
+                        '🗺️ فتح رابط الموقع',
+                        AppColors.primary,
+                        () => launchUrl(Uri.parse(locationUrl!), mode: LaunchMode.externalApplication),
+                        fullWidth: true,
+                      ),
+                      if (clientLat != null && clientLng != null) ...[
+                        const SizedBox(height: 8),
+                        Row(children: [
+                          Expanded(
+                            child: _webBtn(
+                              '🗺️ تحديد الاتجاهات',
+                              const Color(0xFF2E7D32),
+                              () => _openDirections(clientLat!, clientLng!),
+                              fullWidth: true,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: _webBtn(
+                              _etaLoading ? '⏳ جاري الحساب...' : '⏱️ وقت الوصول المتوقع',
+                              const Color(0xFF9B59B6),
+                              _etaLoading ? null : () => _calcEta(clientLat!, clientLng!),
+                              fullWidth: true,
+                            ),
+                          ),
+                        ]),
+                      ],
+                    ] else if (clientLat != null && clientLng != null) ...[
                       Text(
                         '${clientLat.toStringAsFixed(5)}, ${clientLng.toStringAsFixed(5)}',
                         style: const TextStyle(color: AppColors.text, fontSize: 13, fontFamily: 'monospace'),
@@ -587,24 +998,24 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
                           ),
                         ),
                       ]),
-                      if (_etaMinutes != null) ...[
-                        const SizedBox(height: 8),
-                        Container(
-                          width: double.infinity,
-                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF9B59B6).withOpacity(0.15),
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(color: const Color(0xFF9B59B6).withOpacity(0.4)),
-                          ),
-                          child: Text(
-                            '⏱️ وقت الوصول المتوقع: ${_etaMinutes! < 60 ? '${_etaMinutes!} دقيقة' : '${_etaMinutes! ~/ 60} ساعة ${_etaMinutes! % 60} دقيقة'}',
-                            style: const TextStyle(color: Color(0xFF9B59B6), fontWeight: FontWeight.bold, fontSize: 13),
-                          ),
-                        ),
-                      ],
                     ] else ...[
                       const Text('لا يوجد موقع مسجّل للعميل', style: TextStyle(color: AppColors.muted, fontSize: 13)),
+                    ],
+                    if (_etaMinutes != null) ...[
+                      const SizedBox(height: 8),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF9B59B6).withOpacity(0.15),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: const Color(0xFF9B59B6).withOpacity(0.4)),
+                        ),
+                        child: Text(
+                          '⏱️ وقت الوصول المتوقع: ${_etaMinutes! < 60 ? '${_etaMinutes!} دقيقة' : '${_etaMinutes! ~/ 60} ساعة ${_etaMinutes! % 60} دقيقة'}',
+                          style: const TextStyle(color: Color(0xFF9B59B6), fontWeight: FontWeight.bold, fontSize: 13),
+                        ),
+                      ),
                     ],
                   ],
                 ],
@@ -619,7 +1030,13 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
                 // Grid: الفني + الموعد + المبلغ + طريقة الدفع
                 Row(children: [
                   Expanded(child: _labelValue('الفني المعيّن', technician?['name'] ?? '—')),
-                  Expanded(child: _labelValue('وقت الوصول المحدد', _formatDateTime(scheduledAt))),
+                  Expanded(
+                    child: _labelValue(
+                      'وقت الوصول المحدد',
+                      // نفضّل وقت الوصول المحدد من المسؤول، وإن لم يتوفر نستخدم تاريخ الموعد
+                      _formatDateTime(estimatedArrivalAt ?? scheduledAt),
+                    ),
+                  ),
                 ]),
                 const SizedBox(height: 14),
                 Row(children: [
@@ -643,6 +1060,53 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
               ],
             ),
             const SizedBox(height: 16),
+
+            // ── نسبة الإنجاز الكلية ─────────────────────────────────────────
+            if (_items.isNotEmpty)
+              Builder(builder: (_) {
+                int total = 0;
+                for (final item in _items) {
+                  total += (item['progress'] as int? ?? ((item['isCompleted'] as bool? ?? false) ? 100 : 0));
+                }
+                final overall = (total / _items.length).round();
+                final oColor = _progressColor(overall);
+                return Container(
+                  margin: const EdgeInsets.only(bottom: 16),
+                  padding: const EdgeInsets.all(20),
+                  decoration: BoxDecoration(
+                    color: AppColors.card,
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: oColor.withOpacity(0.3)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(children: [
+                        Text('نسبة الإنجاز الكلية'.toUpperCase(),
+                            style: const TextStyle(color: AppColors.primary, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.5)),
+                        const Spacer(),
+                        Text('$overall%',
+                            style: TextStyle(color: oColor, fontSize: 22, fontWeight: FontWeight.w900)),
+                      ]),
+                      const SizedBox(height: 12),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(6),
+                        child: LinearProgressIndicator(
+                          value: overall / 100.0,
+                          backgroundColor: AppColors.border,
+                          valueColor: AlwaysStoppedAnimation<Color>(oColor),
+                          minHeight: 10,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        '${_items.where((i) => (i['progress'] as int? ?? 0) >= 100).length} من ${_items.length} بنود مكتملة',
+                        style: const TextStyle(color: AppColors.muted, fontSize: 12),
+                      ),
+                    ],
+                  ),
+                );
+              }),
 
             // ── بنود المهمة ────────────────────────────────────────────────
             _sectionCard(
@@ -669,47 +1133,188 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
                 else
                   ..._items.map((item) {
                     final done = item['isCompleted'] as bool? ?? false;
-                    return Container(
-                      margin: const EdgeInsets.only(bottom: 10),
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: done ? Colors.green.withOpacity(0.08) : AppColors.bg,
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(
-                          color: done ? Colors.green.withOpacity(0.3) : AppColors.border,
+                    final progress = item['progress'] as int? ?? (done ? 100 : 0);
+                    final progressNote = item['progressNote']?.toString() ?? '';
+                    final itemId = item['id'] is int ? item['id'] as int : int.tryParse(item['id'].toString()) ?? 0;
+                    final mediaUrls = item['mediaUrls'] is List ? (item['mediaUrls'] as List).cast<String>() : <String>[];
+                    final mediaTypes = item['mediaTypes'] is List ? (item['mediaTypes'] as List).cast<String>() : <String>[];
+                    final isUploading = _mediaUploading[itemId] == true;
+                    final pColor = _progressColor(progress);
+                    return GestureDetector(
+                      onTap: _isCompleted ? null : () => _showProgressEditor(item),
+                      child: Container(
+                        margin: const EdgeInsets.only(bottom: 10),
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: done ? Colors.green.withOpacity(0.08) : AppColors.bg,
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                            color: done ? Colors.green.withOpacity(0.3) : AppColors.border,
+                          ),
                         ),
-                      ),
-                      child: Row(children: [
-                        GestureDetector(
-                          onTap: _isCompleted ? null : () => _toggleItem(item),
-                          child: Container(
-                            width: 24, height: 24,
-                            decoration: BoxDecoration(
-                              color: done ? Colors.green : Colors.transparent,
-                              borderRadius: BorderRadius.circular(5),
-                              border: Border.all(
-                                color: done ? Colors.green : AppColors.border,
-                                width: 2,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(children: [
+                              GestureDetector(
+                                onTap: _isCompleted ? null : () => _toggleItem(item),
+                                child: Container(
+                                  width: 24, height: 24,
+                                  decoration: BoxDecoration(
+                                    color: done ? Colors.green : Colors.transparent,
+                                    borderRadius: BorderRadius.circular(5),
+                                    border: Border.all(
+                                      color: done ? Colors.green : AppColors.border,
+                                      width: 2,
+                                    ),
+                                  ),
+                                  child: done
+                                      ? const Icon(Icons.check, color: Colors.white, size: 14)
+                                      : null,
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Text(
+                                  item['description']?.toString() ?? '',
+                                  style: TextStyle(
+                                    color: done ? Colors.green : AppColors.text,
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w500,
+                                    decoration: done ? TextDecoration.lineThrough : null,
+                                  ),
+                                ),
+                              ),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                decoration: BoxDecoration(
+                                  color: pColor.withOpacity(0.15),
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: Text(
+                                  '$progress%',
+                                  style: TextStyle(color: pColor, fontWeight: FontWeight.w900, fontSize: 12),
+                                ),
+                              ),
+                              const SizedBox(width: 6),
+                              if (!_isCompleted)
+                                isUploading
+                                    ? const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary))
+                                    : GestureDetector(
+                                        onTap: () => _showMediaPicker(itemId),
+                                        child: Container(
+                                          width: 28, height: 28,
+                                          decoration: BoxDecoration(
+                                            color: AppColors.primary.withOpacity(0.15),
+                                            borderRadius: BorderRadius.circular(7),
+                                          ),
+                                          child: const Icon(Icons.add_a_photo, color: AppColors.primary, size: 16),
+                                        ),
+                                      ),
+                            ]),
+                            const SizedBox(height: 8),
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(4),
+                              child: LinearProgressIndicator(
+                                value: progress / 100.0,
+                                backgroundColor: AppColors.border,
+                                valueColor: AlwaysStoppedAnimation<Color>(pColor),
+                                minHeight: 6,
                               ),
                             ),
-                            child: done
-                                ? const Icon(Icons.check, color: Colors.white, size: 14)
-                                : null,
-                          ),
+                            if (progressNote.isNotEmpty) ...[
+                              const SizedBox(height: 6),
+                              Container(
+                                width: double.infinity,
+                                padding: const EdgeInsets.all(8),
+                                decoration: BoxDecoration(
+                                  color: AppColors.card,
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(color: AppColors.border.withOpacity(0.5)),
+                                ),
+                                child: Text(
+                                  progressNote,
+                                  style: const TextStyle(color: AppColors.muted, fontSize: 12),
+                                ),
+                              ),
+                            ],
+                            if (!_isCompleted && progress < 100) ...[
+                              const SizedBox(height: 4),
+                              Text(
+                                'اضغط لتحديث التقدم',
+                                style: TextStyle(color: AppColors.primary.withOpacity(0.6), fontSize: 10),
+                              ),
+                            ],
+                            if (mediaUrls.isNotEmpty) ...[
+                              const SizedBox(height: 8),
+                              SizedBox(
+                                height: 80,
+                                child: ListView.builder(
+                                  scrollDirection: Axis.horizontal,
+                                  itemCount: mediaUrls.length,
+                                  itemBuilder: (_, i) {
+                                    final url = mediaUrls[i];
+                                    final isVideo = i < mediaTypes.length && mediaTypes[i] == 'video';
+                                    return Padding(
+                                      padding: const EdgeInsets.only(left: 8),
+                                      child: SizedBox(
+                                        width: 75, height: 75,
+                                        child: Stack(
+                                          clipBehavior: Clip.none,
+                                          children: [
+                                            GestureDetector(
+                                              onTap: () {
+                                                if (isVideo) {
+                                                  launchUrl(Uri.parse(url));
+                                                } else {
+                                                  _showImageDialog(ApiService.proxyImageUrl(url));
+                                                }
+                                              },
+                                              onLongPress: () => _confirmDeleteMedia(itemId, i),
+                                              child: ClipRRect(
+                                                borderRadius: BorderRadius.circular(8),
+                                                child: isVideo
+                                                    ? Container(
+                                                        width: 75, height: 75,
+                                                        color: Colors.black,
+                                                        child: const Center(child: Icon(Icons.play_circle_fill, color: Colors.white, size: 30)),
+                                                      )
+                                                    : Image.network(
+                                                        ApiService.proxyImageUrl(url),
+                                                        width: 75, height: 75, fit: BoxFit.cover,
+                                                        errorBuilder: (_, __, ___) => Container(
+                                                          width: 75, height: 75, color: AppColors.border,
+                                                          child: const Icon(Icons.broken_image, color: AppColors.muted),
+                                                        ),
+                                                      ),
+                                              ),
+                                            ),
+                                            Positioned(
+                                              top: -6, left: -6,
+                                              child: GestureDetector(
+                                                onTap: () => _confirmDeleteMedia(itemId, i),
+                                                child: Container(
+                                                  width: 26, height: 26,
+                                                  decoration: BoxDecoration(
+                                                    color: Colors.red,
+                                                    shape: BoxShape.circle,
+                                                    border: Border.all(color: AppColors.card, width: 2),
+                                                  ),
+                                                  child: const Icon(Icons.close, color: Colors.white, size: 16),
+                                                ),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                ),
+                              ),
+                            ],
+                          ],
                         ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Text(
-                            item['description']?.toString() ?? '',
-                            style: TextStyle(
-                              color: done ? Colors.green : AppColors.text,
-                              fontSize: 14,
-                              fontWeight: FontWeight.w500,
-                              decoration: done ? TextDecoration.lineThrough : null,
-                            ),
-                          ),
-                        ),
-                      ]),
+                      ),
                     );
                   }),
               ],
@@ -1021,7 +1626,7 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
                                 child: typeList.length > e.key && typeList[e.key] == 'image'
                                     ? ClipRRect(
                                         borderRadius: BorderRadius.circular(8),
-                                        child: Image.network(e.value, height: 120, fit: BoxFit.cover,
+                                        child: Image.network(ApiService.proxyImageUrl(e.value), height: 120, fit: BoxFit.cover,
                                             errorBuilder: (_, __, ___) => const Icon(Icons.broken_image)))
                                     : Row(children: [
                                         const Icon(Icons.play_circle, color: AppColors.primary),

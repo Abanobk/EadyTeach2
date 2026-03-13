@@ -1,9 +1,12 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../providers/auth_provider.dart';
 import '../../utils/app_theme.dart';
 import '../../services/api_service.dart';
 import '../../services/google_auth_service.dart';
+import '../../services/notification_service.dart';
 import 'signup_screen.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -20,7 +23,26 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _loading = false;
   bool _googleLoading = false;
   bool _obscurePassword = true;
+  bool _rememberMe = true;
   String? _error;
+
+  static const _keyRememberMe = 'remember_me';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadRememberMe();
+  }
+
+  Future<void> _loadRememberMe() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() => _rememberMe = prefs.getBool(_keyRememberMe) ?? true);
+  }
+
+  Future<void> _saveRememberMe(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_keyRememberMe, value);
+  }
 
   @override
   void dispose() {
@@ -35,6 +57,7 @@ class _LoginScreenState extends State<LoginScreen> {
       _loading = true;
       _error = null;
     });
+    ApiService.setPersistSession(_rememberMe);
 
     try {
       // Try adminLogin first (for admins/staff), then userLogin (for customers)
@@ -47,29 +70,35 @@ class _LoginScreenState extends State<LoginScreen> {
             'password': _passwordController.text,
           },
         );
-      } catch (adminErr) {
-        // If admin login fails, try user login
-        final errMsg = adminErr.toString();
-        if (errMsg.contains('UNAUTHORIZED') || errMsg.contains('غير صحيح')) {
-          result = await ApiService.mutate(
-            'auth.userLogin',
-            input: {
-              'email': _emailController.text.trim(),
-              'password': _passwordController.text,
-            },
-          );
-        } else {
-          rethrow;
-        }
+      } catch (_) {
+        // Admin login failed (wrong role, wrong credentials, etc.) – try user login
+        result = await ApiService.mutate(
+          'auth.userLogin',
+          input: {
+            'email': _emailController.text.trim(),
+            'password': _passwordController.text,
+          },
+        );
       }
 
       if (!mounted) return;
 
       if (result != null && result['success'] == true) {
         final auth = context.read<AuthProvider>();
-        await auth.checkAuth();
+        final data = result['data'];
+        if (data != null && data is Map<String, dynamic> && data['user'] != null) {
+          auth.setUserFromLoginData(data);
+        } else {
+          await auth.checkAuth();
+        }
         if (!mounted) return;
         if (auth.isLoggedIn) {
+          try {
+            await NotificationService().getAndSaveFcmToken();
+            unawaited(NotificationService().updateBadgeFromServer());
+          } catch (e) {
+            print('FCM_ERROR: $e');
+          }
           Navigator.pushReplacementNamed(context, '/role-select');
         } else {
           setState(() => _error = 'تم تسجيل الدخول لكن تعذّر تحميل البيانات.');
@@ -77,11 +106,14 @@ class _LoginScreenState extends State<LoginScreen> {
       }
     } catch (e) {
       if (!mounted) return;
+      // طباعة الخطأ الحقيقي في التيرمنال للمساعدة في التشخيص (لن يراه المستخدم)
+      // ignore: avoid_print
+      print('LOGIN_ERROR: $e');
       final errMsg = e.toString();
       if (errMsg.contains('UNAUTHORIZED') || errMsg.contains('غير صحيح') || errMsg.contains('غير نشط')) {
         setState(() => _error = 'البريد الإلكتروني أو كلمة المرور غير صحيحة');
       } else {
-        setState(() => _error = 'حدث خطأ. تأكد من الاتصال بالإنترنت.');
+        setState(() => _error = 'خطأ: ${errMsg.length > 120 ? errMsg.substring(0, 120) : errMsg}');
       }
     } finally {
       if (mounted) setState(() => _loading = false);
@@ -93,6 +125,7 @@ class _LoginScreenState extends State<LoginScreen> {
       _googleLoading = true;
       _error = null;
     });
+    ApiService.setPersistSession(_rememberMe);
 
     try {
       final result = await GoogleAuthService.signIn();
@@ -106,9 +139,20 @@ class _LoginScreenState extends State<LoginScreen> {
 
       if (result['success'] == true) {
         final auth = context.read<AuthProvider>();
-        await auth.checkAuth();
+        final data = result['data'];
+        if (data != null && data is Map<String, dynamic> && data['user'] != null) {
+          auth.setUserFromLoginData(data);
+        } else {
+          await auth.checkAuth();
+        }
         if (!mounted) return;
         if (auth.isLoggedIn) {
+          try {
+            await NotificationService().getAndSaveFcmToken();
+            unawaited(NotificationService().updateBadgeFromServer());
+          } catch (e) {
+            print('FCM_ERROR: $e');
+          }
           Navigator.pushReplacementNamed(context, '/role-select');
         } else {
           setState(() => _error = 'تم تسجيل الدخول لكن تعذّر تحميل البيانات.');
@@ -374,6 +418,48 @@ class _LoginScreenState extends State<LoginScreen> {
                       return null;
                     },
                     onFieldSubmitted: (_) => _login(),
+                  ),
+
+                  const SizedBox(height: 16),
+
+                  // حفظ الحساب للتذكّر
+                  InkWell(
+                    onTap: () async {
+                      final newVal = !_rememberMe;
+                      setState(() => _rememberMe = newVal);
+                      await _saveRememberMe(newVal);
+                    },
+                    borderRadius: BorderRadius.circular(8),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      child: Row(
+                        children: [
+                          SizedBox(
+                            width: 22,
+                            height: 22,
+                            child: Checkbox(
+                              value: _rememberMe,
+                              onChanged: (v) async {
+                                setState(() => _rememberMe = v ?? true);
+                                await _saveRememberMe(_rememberMe);
+                              },
+                              activeColor: AppColors.primary,
+                              fillColor: MaterialStateProperty.resolveWith((states) {
+                                if (states.contains(MaterialState.selected)) return AppColors.primary;
+                                return Colors.transparent;
+                              }),
+                              side: BorderSide(color: AppColors.muted.withOpacity(0.6)),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          const Text(
+                            'حفظ الحساب للتذكّر — التنقّل بدون إعادة الدخول',
+                            style: TextStyle(color: AppColors.text, fontSize: 14),
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
 
                   const SizedBox(height: 28),

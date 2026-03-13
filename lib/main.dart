@@ -8,8 +8,14 @@ import 'screens/auth/login_screen.dart';
 import 'screens/auth/role_select_screen.dart';
 import 'screens/client/client_home_screen.dart';
 import 'screens/technician/technician_home_screen.dart';
+import 'screens/technician/task_detail_screen.dart';
 import 'screens/admin/admin_home_screen.dart';
+import 'screens/admin/quotation_detail_screen.dart';
 import 'utils/app_theme.dart';
+import 'dart:async';
+import 'services/notification_service.dart';
+
+final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
 /// Background message handler - must be top-level function
 @pragma('vm:entry-point')
@@ -17,20 +23,24 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   if (Firebase.apps.isEmpty) {
     await Firebase.initializeApp();
   }
+  debugPrint('[FCM Background] ${message.notification?.title}');
 }
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Initialize Firebase - check if already initialized to avoid duplicate-app error
-  try {
-    if (Firebase.apps.isEmpty) {
-      await Firebase.initializeApp();
-    }
-    FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
-  } catch (e) {
-    debugPrint('Firebase init failed: $e');
-  }
+  ErrorWidget.builder = (FlutterErrorDetails details) => Material(
+        color: Colors.red.shade900,
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Text(
+              details.exceptionAsString(),
+              style: const TextStyle(color: Colors.white, fontSize: 12),
+            ),
+          ),
+        ),
+      );
 
   runApp(
     MultiProvider(
@@ -41,6 +51,22 @@ void main() async {
       child: const EasyTechApp(),
     ),
   );
+
+  Future(() async {
+    try {
+      if (Firebase.apps.isEmpty) {
+        await Firebase.initializeApp();
+      }
+      FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
+      await NotificationService().initialize();
+    } catch (e) {
+      debugPrint('Firebase/Notification init failed: $e');
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      NotificationService().setNavigatorKey(navigatorKey);
+      NotificationService().processPendingNotification();
+    });
+  });
 }
 
 class EasyTechApp extends StatelessWidget {
@@ -49,6 +75,7 @@ class EasyTechApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      navigatorKey: navigatorKey,
       title: 'easytecheg',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.darkTheme,
@@ -59,7 +86,30 @@ class EasyTechApp extends StatelessWidget {
         '/role-select': (_) => const RoleSelectScreen(),
         '/client': (_) => const ClientHomeScreen(),
         '/technician': (_) => const TechnicianHomeScreen(),
-        '/admin': (_) => const AdminHomeScreen(),
+        '/task-detail': (ctx) {
+          final id = ModalRoute.of(ctx)?.settings.arguments;
+          final taskId = id is int ? id : (id != null ? int.tryParse(id.toString()) : null);
+          if (taskId == null) return const SizedBox.shrink();
+          return TaskDetailScreen(task: {'id': taskId});
+        },
+        '/quotation-detail': (ctx) {
+          final id = ModalRoute.of(ctx)?.settings.arguments;
+          final qId = id is int ? id : (id != null ? int.tryParse(id.toString()) : null);
+          if (qId == null) return const SizedBox.shrink();
+          return QuotationDetailScreen(quotationId: qId);
+        },
+        '/admin': (ctx) {
+          final auth = Provider.of<AuthProvider>(ctx, listen: false);
+          if (!auth.canAccessAdmin) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (ctx.mounted) {
+                Navigator.of(ctx).pushReplacementNamed('/role-select');
+              }
+            });
+            return const Scaffold(body: Center(child: CircularProgressIndicator(color: Color(0xFFD4920A))));
+          }
+          return const AdminHomeScreen();
+        },
       },
     );
   }
@@ -83,15 +133,21 @@ class _SplashScreenState extends State<SplashScreen> {
     await Future.delayed(const Duration(milliseconds: 1800));
     if (!mounted) return;
 
-    final auth = context.read<AuthProvider>();
-    await auth.checkAuth();
+    try {
+      final auth = context.read<AuthProvider>();
+      await auth.checkAuth().timeout(const Duration(seconds: 20));
 
-    if (!mounted) return;
+      if (!mounted) return;
 
-    if (auth.isLoggedIn) {
-      Navigator.pushReplacementNamed(context, '/role-select');
-    } else {
-      Navigator.pushReplacementNamed(context, '/login');
+      if (auth.isLoggedIn) {
+        await NotificationService().getAndSaveFcmToken().timeout(const Duration(seconds: 10));
+        unawaited(NotificationService().updateBadgeFromServer());
+        if (mounted) Navigator.pushReplacementNamed(context, '/role-select');
+      } else {
+        if (mounted) Navigator.pushReplacementNamed(context, '/login');
+      }
+    } catch (_) {
+      if (mounted) Navigator.pushReplacementNamed(context, '/login');
     }
   }
 

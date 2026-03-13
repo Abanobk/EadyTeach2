@@ -11,12 +11,29 @@ class MyTasksScreen extends StatefulWidget {
 
 class _MyTasksScreenState extends State<MyTasksScreen> {
   List<dynamic> _tasks = [];
+  List<dynamic> _surveys = [];
   bool _loading = true;
+  bool _loadingSurveys = false;
+  String _tab = 'tasks'; // tasks | surveys
 
   @override
   void initState() {
     super.initState();
     _loadTasks();
+  }
+
+  Future<void> _loadSurveys() async {
+    setState(() => _loadingSurveys = true);
+    try {
+      final res = await ApiService.query('surveys.mySurveys');
+      setState(() {
+        _surveys = res['data'] ?? res ?? [];
+        if (_surveys is! List) _surveys = [];
+        _loadingSurveys = false;
+      });
+    } catch (e) {
+      setState(() => _loadingSurveys = false);
+    }
   }
 
   Future<void> _loadTasks() async {
@@ -37,50 +54,121 @@ class _MyTasksScreenState extends State<MyTasksScreen> {
     return Scaffold(
       backgroundColor: AppColors.bg,
       appBar: AppBar(
-        title: const Text('مهامي', style: TextStyle(color: AppColors.text, fontWeight: FontWeight.bold)),
+        title: const Text(
+          'منطقتي',
+          style: TextStyle(color: AppColors.text, fontWeight: FontWeight.bold),
+        ),
         backgroundColor: AppColors.card,
         automaticallyImplyLeading: false,
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh, color: AppColors.muted),
-            onPressed: _loadTasks,
+            onPressed: () => _tab == 'tasks' ? _loadTasks() : _loadSurveys(),
           ),
         ],
-      ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
-          : _tasks.isEmpty
-              ? Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.assignment_outlined, size: 64, color: AppColors.muted),
-                      const SizedBox(height: 16),
-                      const Text('لا توجد مهام بعد',
-                          style: TextStyle(color: AppColors.muted, fontSize: 18)),
-                      const SizedBox(height: 8),
-                      const Text('يمكنك طلب خدمة من قسم "طلب خدمة"',
-                          style: TextStyle(color: AppColors.muted, fontSize: 13)),
-                    ],
-                  ),
-                )
-              : RefreshIndicator(
-                  onRefresh: _loadTasks,
-                  color: AppColors.primary,
-                  child: ListView.builder(
-                    padding: const EdgeInsets.all(16),
-                    itemCount: _tasks.length,
-                    itemBuilder: (ctx, i) => _TaskCard(
-                      task: _tasks[i],
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => TaskDetailScreen(task: _tasks[i]),
-                        ),
-                      ).then((_) => _loadTasks()),
-                    ),
-                  ),
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(44),
+          child: Container(
+            color: AppColors.card,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: Row(
+              children: [
+                _TabChip(
+                  label: 'مهامي',
+                  icon: Icons.assignment_outlined,
+                  selected: _tab == 'tasks',
+                  onTap: () => setState(() => _tab = 'tasks'),
                 ),
+                const SizedBox(width: 8),
+                _TabChip(
+                  label: 'معايناتي',
+                  icon: Icons.home_work_outlined,
+                  selected: _tab == 'surveys',
+                  onTap: () {
+                    setState(() => _tab = 'surveys');
+                    _loadSurveys();
+                  },
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+      body: _tab == 'tasks'
+          ? (_loading
+              ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
+              : _tasks.isEmpty
+                  ? Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.assignment_outlined, size: 64, color: AppColors.muted),
+                          const SizedBox(height: 16),
+                          const Text('لا توجد مهام بعد',
+                              style: TextStyle(color: AppColors.muted, fontSize: 18)),
+                          const SizedBox(height: 8),
+                          const Text('يمكنك طلب خدمة من قسم \"طلب خدمة\"',
+                              style: TextStyle(color: AppColors.muted, fontSize: 13)),
+                        ],
+                      ),
+                    )
+                  : RefreshIndicator(
+                      onRefresh: _loadTasks,
+                      color: AppColors.primary,
+                      child: ListView.builder(
+                        padding: const EdgeInsets.all(16),
+                        itemCount: _tasks.length,
+                        itemBuilder: (ctx, i) => _TaskCard(
+                          task: _tasks[i],
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => TaskDetailScreen(task: _tasks[i]),
+                            ),
+                          ).then((_) => _loadTasks()),
+                        ),
+                      ),
+                    ))
+          : _buildSurveysTab(),
+    );
+  }
+
+  Widget _buildSurveysTab() {
+    if (_loadingSurveys && _surveys.isEmpty) {
+      return const Center(child: CircularProgressIndicator(color: AppColors.primary));
+    }
+    if (_surveys.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.home_work_outlined, size: 64, color: AppColors.muted),
+              const SizedBox(height: 16),
+              const Text(
+                'معايناتي',
+                style: TextStyle(color: AppColors.text, fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'لا توجد معاينات مسجلة بعد.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: AppColors.muted, fontSize: 13),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+    return RefreshIndicator(
+      onRefresh: _loadSurveys,
+      color: AppColors.primary,
+      child: ListView.builder(
+        padding: const EdgeInsets.all(16),
+        itemCount: _surveys.length,
+        itemBuilder: (ctx, i) => _SurveyCard(survey: _surveys[i]),
+      ),
     );
   }
 }
@@ -118,9 +206,10 @@ class _TaskCard extends StatelessWidget {
                   child: Text(
                     task['title'] ?? 'مهمة #${task['id']}',
                     style: const TextStyle(
-                        color: AppColors.text,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 15),
+                      color: AppColors.text,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 15,
+                    ),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -134,8 +223,10 @@ class _TaskCard extends StatelessWidget {
                 children: [
                   const Icon(Icons.engineering_outlined, size: 14, color: AppColors.muted),
                   const SizedBox(width: 4),
-                  Text('الفني: ${task['technicianName']}',
-                      style: const TextStyle(color: AppColors.muted, fontSize: 12)),
+                  Text(
+                    'الفني: ${task['technicianName']}',
+                    style: const TextStyle(color: AppColors.muted, fontSize: 12),
+                  ),
                 ],
               ),
             ],
@@ -156,8 +247,13 @@ class _TaskCard extends StatelessWidget {
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
-                Text('اضغط لعرض التفاصيل والملاحظات',
-                    style: TextStyle(color: AppColors.primary.withOpacity(0.8), fontSize: 11)),
+                Text(
+                  'اضغط لعرض التفاصيل والملاحظات',
+                  style: TextStyle(
+                    color: AppColors.primary.withOpacity(0.8),
+                    fontSize: 11,
+                  ),
+                ),
                 const SizedBox(width: 4),
                 const Icon(Icons.arrow_forward_ios, size: 11, color: AppColors.primary),
               ],
@@ -220,7 +316,175 @@ class _StatusBadge extends StatelessWidget {
         children: [
           Icon(icon, size: 12, color: color),
           const SizedBox(width: 4),
-          Text(label, style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.w600)),
+          Text(
+            label,
+            style: TextStyle(
+              color: color,
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TabChip extends StatelessWidget {
+  final String label;
+  final IconData icon;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _TabChip({
+    required this.label,
+    required this.icon,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: selected ? AppColors.primary : AppColors.card,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: selected ? AppColors.primary : AppColors.border,
+          ),
+        ),
+        child: Row(
+          children: [
+            Icon(
+              icon,
+              size: 16,
+              color: selected ? Colors.black : AppColors.muted,
+            ),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: TextStyle(
+                color: selected ? Colors.black : AppColors.text,
+                fontSize: 13,
+                fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SurveyCard extends StatelessWidget {
+  final Map<String, dynamic> survey;
+
+  const _SurveyCard({required this.survey});
+
+  @override
+  Widget build(BuildContext context) {
+    final projectName = survey['projectName'] ?? 'معاينة بدون اسم';
+    final createdAt = survey['createdAt'] != null
+        ? DateTime.fromMillisecondsSinceEpoch(survey['createdAt'])
+        : null;
+    final lightingLines = survey['lightingLines'] ?? 0;
+    final curtains = survey['curtains'] ?? 0;
+    final acUnits = survey['acUnits'] ?? 0;
+    final tvUnits = survey['tvUnits'] ?? 0;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.card,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            projectName,
+            style: const TextStyle(
+              color: AppColors.text,
+              fontWeight: FontWeight.bold,
+              fontSize: 15,
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          if (createdAt != null) ...[
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                const Icon(Icons.calendar_today_outlined, size: 14, color: AppColors.muted),
+                const SizedBox(width: 4),
+                Text(
+                  '${createdAt.day}/${createdAt.month}/${createdAt.year}',
+                  style: const TextStyle(color: AppColors.muted, fontSize: 12),
+                ),
+              ],
+            ),
+          ],
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 12,
+            runSpacing: 4,
+            children: [
+              if (lightingLines > 0)
+                _SurveyChip(
+                  icon: Icons.lightbulb_outline,
+                  label: '$lightingLines خط إضاءة',
+                ),
+              if (curtains > 0)
+                _SurveyChip(
+                  icon: Icons.curtains,
+                  label: '$curtains ستارة',
+                ),
+              if (acUnits > 0)
+                _SurveyChip(
+                  icon: Icons.ac_unit,
+                  label: '$acUnits تكييف',
+                ),
+              if (tvUnits > 0)
+                _SurveyChip(
+                  icon: Icons.tv,
+                  label: '$tvUnits تلفزيون',
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SurveyChip extends StatelessWidget {
+  final IconData icon;
+  final String label;
+
+  const _SurveyChip({required this.icon, required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: AppColors.primary.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 12, color: AppColors.primary),
+          const SizedBox(width: 4),
+          Text(
+            label,
+            style: const TextStyle(color: AppColors.text, fontSize: 11),
+          ),
         ],
       ),
     );
@@ -276,8 +540,10 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
       child: Scaffold(
         backgroundColor: AppColors.bg,
         appBar: AppBar(
-          title: Text(task['title'] ?? 'تفاصيل المهمة',
-              style: const TextStyle(color: AppColors.text, fontWeight: FontWeight.bold)),
+          title: Text(
+            task['title'] ?? 'تفاصيل المهمة',
+            style: const TextStyle(color: AppColors.text, fontWeight: FontWeight.bold),
+          ),
           backgroundColor: AppColors.card,
           leading: IconButton(
             icon: const Icon(Icons.arrow_back_ios, color: AppColors.text),
@@ -308,21 +574,28 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          Text('مهمة #${task['id']}',
-                              style: const TextStyle(color: AppColors.muted, fontSize: 12)),
+                          Text(
+                            'مهمة #${task['id']}',
+                            style: const TextStyle(color: AppColors.muted, fontSize: 12),
+                          ),
                           _StatusBadge(status: status),
                         ],
                       ),
                       const SizedBox(height: 8),
-                      Text(task['title'] ?? '',
-                          style: const TextStyle(
-                              color: AppColors.text,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 18)),
+                      Text(
+                        task['title'] ?? '',
+                        style: const TextStyle(
+                          color: AppColors.text,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 18,
+                        ),
+                      ),
                       if (task['notes'] != null && task['notes'].toString().isNotEmpty) ...[
                         const SizedBox(height: 8),
-                        Text(task['notes'],
-                            style: const TextStyle(color: AppColors.muted, fontSize: 13)),
+                        Text(
+                          task['notes'],
+                          style: const TextStyle(color: AppColors.muted, fontSize: 13),
+                        ),
                       ],
                       const Divider(height: 24),
                       if (task['technicianName'] != null)
@@ -335,7 +608,8 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
                         _InfoRow(
                           icon: Icons.calendar_today_outlined,
                           label: 'الموعد',
-                          value: '${scheduledAt.day}/${scheduledAt.month}/${scheduledAt.year}',
+                          value:
+                              '${scheduledAt.day}/${scheduledAt.month}/${scheduledAt.year}',
                         ),
                       if (task['amount'] != null)
                         _InfoRow(
@@ -350,11 +624,14 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
                 const SizedBox(height: 20),
 
                 // Notes Section
-                const Text('ملاحظات الفني',
-                    style: TextStyle(
-                        color: AppColors.text,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 16)),
+                const Text(
+                  'ملاحظات الفني',
+                  style: TextStyle(
+                    color: AppColors.text,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 16,
+                  ),
+                ),
                 const SizedBox(height: 12),
 
                 if (_loadingNotes)
@@ -372,13 +649,15 @@ class _TaskDetailScreenState extends State<TaskDetailScreen> {
                       children: [
                         Icon(Icons.notes_outlined, size: 40, color: AppColors.muted),
                         SizedBox(height: 8),
-                        Text('لا توجد ملاحظات بعد',
-                            style: TextStyle(color: AppColors.muted)),
+                        Text(
+                          'لا توجد ملاحظات بعد',
+                          style: TextStyle(color: AppColors.muted),
+                        ),
                       ],
                     ),
                   )
                 else
-                  ...(_notes.map((note) => _NoteCard(note: note)).toList()),
+                  ..._notes.map((note) => _NoteCard(note: note)).toList(),
               ],
             ),
           ),
@@ -393,7 +672,11 @@ class _InfoRow extends StatelessWidget {
   final String label;
   final String value;
 
-  const _InfoRow({required this.icon, required this.label, required this.value});
+  const _InfoRow({
+    required this.icon,
+    required this.label,
+    required this.value,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -403,10 +686,19 @@ class _InfoRow extends StatelessWidget {
         children: [
           Icon(icon, size: 16, color: AppColors.muted),
           const SizedBox(width: 8),
-          Text('$label: ', style: const TextStyle(color: AppColors.muted, fontSize: 13)),
+          Text(
+            '$label: ',
+            style: const TextStyle(color: AppColors.muted, fontSize: 13),
+          ),
           Expanded(
-            child: Text(value,
-                style: const TextStyle(color: AppColors.text, fontSize: 13, fontWeight: FontWeight.w500)),
+            child: Text(
+              value,
+              style: const TextStyle(
+                color: AppColors.text,
+                fontSize: 13,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
           ),
         ],
       ),
@@ -416,6 +708,7 @@ class _InfoRow extends StatelessWidget {
 
 class _NoteCard extends StatelessWidget {
   final Map<String, dynamic> note;
+
   const _NoteCard({required this.note});
 
   @override
@@ -441,22 +734,28 @@ class _NoteCard extends StatelessWidget {
             children: [
               const Icon(Icons.engineering_outlined, size: 16, color: AppColors.primary),
               const SizedBox(width: 6),
-              Text(note['authorName'] ?? 'الفني',
-                  style: const TextStyle(
-                      color: AppColors.primary,
-                      fontWeight: FontWeight.w600,
-                      fontSize: 13)),
+              Text(
+                note['authorName'] ?? 'الفني',
+                style: const TextStyle(
+                  color: AppColors.primary,
+                  fontWeight: FontWeight.w600,
+                  fontSize: 13,
+                ),
+              ),
               const Spacer(),
               if (createdAt != null)
                 Text(
-                  '${createdAt.day}/${createdAt.month} ${createdAt.hour}:${createdAt.minute.toString().padLeft(2, '0')}',
+                  '${createdAt.day}/${createdAt.month} '
+                  '${createdAt.hour}:${createdAt.minute.toString().padLeft(2, '0')}',
                   style: const TextStyle(color: AppColors.muted, fontSize: 11),
                 ),
             ],
           ),
           const SizedBox(height: 8),
-          Text(note['content'] ?? '',
-              style: const TextStyle(color: AppColors.text, fontSize: 14)),
+          Text(
+            note['content'] ?? '',
+            style: const TextStyle(color: AppColors.text, fontSize: 14),
+          ),
           if (mediaUrls.isNotEmpty) ...[
             const SizedBox(height: 10),
             Wrap(
@@ -475,12 +774,15 @@ class _NoteCard extends StatelessWidget {
                             height: 80,
                             color: Colors.black,
                             child: const Center(
-                              child: Icon(Icons.play_circle_outline,
-                                  color: Colors.white, size: 36),
+                              child: Icon(
+                                Icons.play_circle_outline,
+                                color: Colors.white,
+                                size: 36,
+                              ),
                             ),
                           )
                         : Image.network(
-                            url,
+                            ApiService.proxyImageUrl(url),
                             width: 80,
                             height: 80,
                             fit: BoxFit.cover,
@@ -488,8 +790,10 @@ class _NoteCard extends StatelessWidget {
                               width: 80,
                               height: 80,
                               color: AppColors.border,
-                              child: const Icon(Icons.broken_image_outlined,
-                                  color: AppColors.muted),
+                              child: const Icon(
+                                Icons.broken_image_outlined,
+                                color: AppColors.muted,
+                              ),
                             ),
                           ),
                   ),
@@ -511,14 +815,17 @@ class _NoteCard extends StatelessWidget {
             ? const Center(
                 child: Padding(
                   padding: EdgeInsets.all(20),
-                  child: Text('افتح الفيديو في المتصفح',
-                      style: TextStyle(color: Colors.white)),
+                  child: Text(
+                    'افتح الفيديو في المتصفح',
+                    style: TextStyle(color: Colors.white),
+                  ),
                 ),
               )
             : InteractiveViewer(
-                child: Image.network(url, fit: BoxFit.contain),
+                child: Image.network(ApiService.proxyImageUrl(url), fit: BoxFit.contain),
               ),
       ),
     );
   }
 }
+

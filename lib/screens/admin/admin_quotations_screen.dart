@@ -267,7 +267,7 @@ class _AdminQuotationsScreenState extends State<AdminQuotationsScreen> {
                                             Text(
                                               q['notes'].toString(),
                                               style: const TextStyle(color: AppColors.muted, fontSize: 12),
-                                              maxLines: 1,
+                                              maxLines: 3,
                                               overflow: TextOverflow.ellipsis,
                                             ),
                                           ],

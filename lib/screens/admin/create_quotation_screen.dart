@@ -32,6 +32,11 @@ class _CreateQuotationScreenState extends State<CreateQuotationScreen> {
   final _notesCtrl = TextEditingController();
   bool _addInstallation = false;
   double _installationPercent = 20.0;
+  bool _addDiscount = false;
+  bool _discountIsPercent = true;
+  double _discountPercent = 10.0;
+  double _discountFixed = 0;
+  final _discountFixedCtrl = TextEditingController();
   bool _submitting = false;
 
   // Variant selection modal
@@ -52,6 +57,7 @@ class _CreateQuotationScreenState extends State<CreateQuotationScreen> {
     _clientEmailCtrl.dispose();
     _clientPhoneCtrl.dispose();
     _notesCtrl.dispose();
+    _discountFixedCtrl.dispose();
     super.dispose();
   }
 
@@ -193,7 +199,12 @@ class _CreateQuotationScreenState extends State<CreateQuotationScreen> {
 
   double get _subtotal => _cartItems.fold(0, (sum, item) => sum + (item['unitPrice'] as double) * (item['qty'] as int));
   double get _installationAmount => _addInstallation ? _subtotal * _installationPercent / 100 : 0;
-  double get _total => _subtotal + _installationAmount;
+  double get _discountAmount {
+    if (!_addDiscount) return 0;
+    if (_discountIsPercent) return _subtotal * _discountPercent / 100;
+    return _discountFixed;
+  }
+  double get _total => _subtotal + _installationAmount - _discountAmount;
 
   Future<void> _submit() async {
     if (_cartItems.isEmpty) {
@@ -218,21 +229,34 @@ class _CreateQuotationScreenState extends State<CreateQuotationScreen> {
     setState(() => _submitting = true);
     try {
       final input = <String, dynamic>{
-        'items': _cartItems.map((item) => {
-          'productId': item['productId'],
-          'productName': item['productName'],
-          'productDescription': item['productDescription'],
-          'productImage': item['productImage'],
-          'selectedColor': item['selectedColor'],
-          'selectedVariant': item['selectedVariant'],
-          'unitPrice': item['unitPrice'],
-          'qty': item['qty'],
-          'totalPrice': (item['unitPrice'] as double) * (item['qty'] as int),
+        'items': _cartItems.asMap().entries.map((e) {
+          final idx = e.key;
+          final item = e.value;
+          // Build description with color/variant info
+          final descParts = <String>[];
+          if (item['productDescription'] != null && item['productDescription'].toString().isNotEmpty) {
+            descParts.add(item['productDescription'].toString());
+          }
+          if (item['selectedColor'] != null && item['selectedColor'].toString().isNotEmpty) {
+            descParts.add('اللون: ${item['selectedColor']}');
+          }
+          if (item['selectedVariant'] != null && item['selectedVariant'].toString().isNotEmpty) {
+            descParts.add('النوع: ${item['selectedVariant']}');
+          }
+          return {
+            'productId': item['productId'] is int ? item['productId'] as int : int.tryParse(item['productId'].toString()),
+            'productName': item['productName'] as String,
+            'productNameAr': item['productName'] as String,
+            'description': descParts.isEmpty ? null : descParts.join(' | '),
+            'imageUrl': item['productImage'],
+            'quantity': item['qty'] as int,
+            'unitPrice': (item['unitPrice'] as double),
+            'sortOrder': idx,
+          };
         }).toList(),
-        'subtotal': _subtotal,
         'installationPercent': _addInstallation ? _installationPercent : 0.0,
-        'installationAmount': _installationAmount,
-        'totalAmount': _total,
+        'discountPercent': _addDiscount && _discountIsPercent ? _discountPercent : 0.0,
+        'discountAmount': _addDiscount && !_discountIsPercent ? _discountFixed : 0.0,
         'notes': _notesCtrl.text.trim().isEmpty ? null : _notesCtrl.text.trim(),
       };
 
@@ -405,10 +429,11 @@ class _CreateQuotationScreenState extends State<CreateQuotationScreen> {
                                   leading: ClipRRect(
                                     borderRadius: BorderRadius.circular(8),
                                     child: () {
-                                      final imgUrl = p['mainImageUrl'] as String? ??
+                                      final rawImgUrl = p['mainImageUrl'] as String? ??
                                           (p['images'] != null && (p['images'] as List).isNotEmpty
                                               ? (p['images'] as List)[0].toString()
                                               : null);
+                                      final imgUrl = rawImgUrl != null ? ApiService.proxyImageUrl(rawImgUrl) : null;
                                       return imgUrl != null
                                           ? Image.network(
                                               imgUrl,
@@ -612,6 +637,90 @@ class _CreateQuotationScreenState extends State<CreateQuotationScreen> {
                           children: [
                             const Text('قيمة التركيبات:', style: TextStyle(color: AppColors.muted, fontSize: 13)),
                             Text('${_installationAmount.toStringAsFixed(0)} ج.م', style: const TextStyle(color: AppColors.primary, fontWeight: FontWeight.bold)),
+                          ],
+                        ),
+                      ],
+                      const SizedBox(height: 4),
+                      // Discount toggle
+                      Row(
+                        children: [
+                          Checkbox(
+                            value: _addDiscount,
+                            onChanged: (v) => setState(() => _addDiscount = v ?? false),
+                            activeColor: AppColors.error,
+                          ),
+                          const Text('إضافة خصم', style: TextStyle(color: AppColors.text, fontWeight: FontWeight.w600)),
+                        ],
+                      ),
+                      if (_addDiscount) ...[
+                        Row(
+                          children: [
+                            Expanded(
+                              child: GestureDetector(
+                                onTap: () => setState(() => _discountIsPercent = true),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(vertical: 8),
+                                  decoration: BoxDecoration(
+                                    color: _discountIsPercent ? AppColors.error.withOpacity(0.15) : AppColors.bg,
+                                    borderRadius: BorderRadius.circular(8),
+                                    border: Border.all(color: _discountIsPercent ? AppColors.error : AppColors.border),
+                                  ),
+                                  child: Center(child: Text('نسبة %', style: TextStyle(color: _discountIsPercent ? AppColors.error : AppColors.muted, fontWeight: FontWeight.bold, fontSize: 12))),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: GestureDetector(
+                                onTap: () => setState(() => _discountIsPercent = false),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(vertical: 8),
+                                  decoration: BoxDecoration(
+                                    color: !_discountIsPercent ? AppColors.error.withOpacity(0.15) : AppColors.bg,
+                                    borderRadius: BorderRadius.circular(8),
+                                    border: Border.all(color: !_discountIsPercent ? AppColors.error : AppColors.border),
+                                  ),
+                                  child: Center(child: Text('مبلغ ثابت', style: TextStyle(color: !_discountIsPercent ? AppColors.error : AppColors.muted, fontWeight: FontWeight.bold, fontSize: 12))),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        if (_discountIsPercent) ...[
+                          Row(
+                            children: [
+                              const Text('نسبة الخصم:', style: TextStyle(color: AppColors.muted, fontSize: 13)),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Slider(
+                                  value: _discountPercent,
+                                  min: 0, max: 50,
+                                  divisions: 50,
+                                  activeColor: AppColors.error,
+                                  onChanged: (v) => setState(() => _discountPercent = v),
+                                ),
+                              ),
+                              Text('${_discountPercent.toStringAsFixed(0)}%', style: const TextStyle(color: AppColors.error, fontWeight: FontWeight.bold)),
+                            ],
+                          ),
+                        ] else ...[
+                          TextField(
+                            controller: _discountFixedCtrl,
+                            decoration: const InputDecoration(
+                              labelText: 'مبلغ الخصم (ج.م)',
+                              prefixIcon: Icon(Icons.money_off, color: AppColors.error),
+                            ),
+                            style: const TextStyle(color: AppColors.text),
+                            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                            onChanged: (v) => setState(() => _discountFixed = double.tryParse(v) ?? 0),
+                          ),
+                        ],
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text('قيمة الخصم:', style: TextStyle(color: AppColors.muted, fontSize: 13)),
+                            Text('- ${_discountAmount.toStringAsFixed(0)} ج.م', style: const TextStyle(color: AppColors.error, fontWeight: FontWeight.bold)),
                           ],
                         ),
                       ],
